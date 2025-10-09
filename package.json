@@ -1,0 +1,94 @@
+{
+  "name": "excel-diff-viewer",
+  "displayName": "Excel Diff Viewer",
+  "description": "compare excel diff",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.99.3"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "excel-diff-viewer.helloWorld",
+        "title": "excel diff viewer: Hello World"
+      },
+      {
+        "command": "excel-diff-viewer.showLogs",
+        "title": "excel diff viewer: Show Logs"
+      },
+      {
+        "command": "excel-diff-viewer.clearLogs",
+        "title": "excel diff viewer: Clear Logs"
+      },
+      {
+        "command": "excel-diff-viewer.testExcel",
+        "title": "excel diff viewer: Test Excel Reader"
+      },
+      {
+        "command": "excel-diff-viewer.validateExcel",
+        "title": "excel diff viewer: Test Excel Validation"
+      },
+      {
+        "command": "excel-diff-viewer.sheetInfo",
+        "title": "excel diff viewer: Test Sheet Info"
+      },
+      {
+        "command": "excel-diff-viewer.batchProcess",
+        "title": "excel diff viewer: Test Batch Process"
+      },
+      {
+        "command": "excel-diff-viewer.compareFiles",
+        "title": "excel diff viewer: Compare Excel Files"
+      },
+      {
+        "command": "excel-diff-viewer.quickCompare",
+        "title": "excel diff viewer: Quick Compare Excel Files"
+      },
+      {
+        "command": "excel-diff-viewer.compareWithOptions",
+        "title": "excel diff viewer: Compare Excel Files with Options"
+      },
+      {
+        "command": "excel-diff-viewer.openDiffViewer",
+        "title": "excel diff viewer: Open Excel Diff Viewer"
+      },
+      {
+        "command": "excel-diff-viewer.compareAndShow",
+        "title": "excel diff viewer: Compare and Show Diff"
+      },
+      {
+        "command": "excel-diff-viewer.testWebview",
+        "title": "excel diff viewer: Test Webview"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/vscode": "^1.104.0",
+    "@typescript-eslint/eslint-plugin": "^8.42.0",
+    "@typescript-eslint/parser": "^8.42.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@types/xlsx": "^0.0.35",
+    "lit": "^3.3.1",
+    "xlsx": "^0.18.5"
+  }
+}

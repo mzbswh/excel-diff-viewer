@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Excel Diff Viewer</title>
+		<style nonce="#{cspNonce}">
+			/* 基础样式 */
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			body {
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+				font-size: 14px;
+				line-height: 1.5;
+				color: var(--vscode-foreground);
+				background-color: var(--vscode-editor-background);
+				overflow: hidden;
+			}
+
+			/* 加载状态 */
+			.loading {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				height: 100vh;
+				gap: 16px;
+			}
+
+			.loading-spinner {
+				width: 32px;
+				height: 32px;
+				border: 3px solid var(--vscode-progressBar-background);
+				border-top: 3px solid var(--vscode-progressBar-foreground);
+				border-radius: 50%;
+				animation: spin 1s linear infinite;
+			}
+
+			@keyframes spin {
+				0% { transform: rotate(0deg); }
+				100% { transform: rotate(360deg); }
+			}
+
+			.loading-text {
+				color: var(--vscode-descriptionForeground);
+			}
+
+			/* 错误状态 */
+			.error {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				height: 100vh;
+				gap: 16px;
+				text-align: center;
+				padding: 20px;
+			}
+
+			.error-icon {
+				font-size: 48px;
+			}
+
+			.error-message {
+				color: var(--vscode-errorForeground);
+				font-size: 16px;
+			}
+
+			/* 差异内容 */
+			.diff-content {
+				display: flex;
+				flex-direction: column;
+				height: 100vh;
+			}
+
+			.diff-header {
+				background-color: var(--vscode-panel-background);
+				border-bottom: 1px solid var(--vscode-panel-border);
+				padding: 12px 16px;
+			}
+
+			.file-info {
+				display: flex;
+				gap: 20px;
+				margin-bottom: 12px;
+			}
+
+			.file-old, .file-new {
+				flex: 1;
+			}
+
+			.file-label {
+				font-weight: 600;
+				margin-right: 8px;
+			}
+
+			.file-path {
+				font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+				font-size: 12px;
+				color: var(--vscode-descriptionForeground);
+			}
+
+			.diff-summary {
+				display: flex;
+				gap: 16px;
+			}
+
+			.summary-item {
+				display: flex;
+				align-items: center;
+				gap: 4px;
+			}
+
+			.summary-label {
+				font-size: 12px;
+				color: var(--vscode-descriptionForeground);
+			}
+
+			.summary-value {
+				font-weight: 600;
+				font-size: 14px;
+			}
+
+			.summary-item.added .summary-value {
+				color: var(--vscode-gitDecoration-addedResourceForeground);
+			}
+
+			.summary-item.removed .summary-value {
+				color: var(--vscode-gitDecoration-deletedResourceForeground);
+			}
+
+			.summary-item.modified .summary-value {
+				color: var(--vscode-gitDecoration-modifiedResourceForeground);
+			}
+
+			/* 标签页 */
+			.diff-tabs {
+				flex: 1;
+				display: flex;
+				flex-direction: column;
+				overflow: hidden;
+			}
+
+			.tab-list {
+				display: flex;
+				background-color: var(--vscode-tab-inactiveBackground);
+				border-bottom: 1px solid var(--vscode-tab-border);
+			}
+
+			.tab-item {
+				padding: 8px 16px;
+				cursor: pointer;
+				border-bottom: 2px solid transparent;
+				transition: all 0.2s ease;
+			}
+
+			.tab-item:hover {
+				background-color: var(--vscode-tab-hoverBackground);
+			}
+
+			.tab-item.active {
+				background-color: var(--vscode-tab-activeBackground);
+				border-bottom-color: var(--vscode-tab-activeBorder);
+			}
+
+			.tab-content {
+				flex: 1;
+				overflow: auto;
+				padding: 16px;
+			}
+
+			/* 表格样式 */
+			.diff-table {
+				width: 100%;
+				border-collapse: collapse;
+				font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+				font-size: 12px;
+			}
+
+			.diff-table th,
+			.diff-table td {
+				border: 1px solid var(--vscode-table-border);
+				padding: 4px 8px;
+				text-align: left;
+				vertical-align: top;
+			}
+
+			.diff-table th {
+				background-color: var(--vscode-table-headerBackground);
+				font-weight: 600;
+				position: sticky;
+				top: 0;
+				z-index: 10;
+			}
+
+			.diff-table td {
+				background-color: var(--vscode-table-cellBackground);
+			}
+
+			/* 差异高亮 */
+			.cell-added {
+				background-color: var(--vscode-gitDecoration-addedResourceForeground) !important;
+				color: var(--vscode-gitDecoration-addedResourceForeground);
+			}
+
+			.cell-removed {
+				background-color: var(--vscode-gitDecoration-deletedResourceForeground) !important;
+				color: var(--vscode-gitDecoration-deletedResourceForeground);
+			}
+
+			.cell-modified {
+				background-color: var(--vscode-gitDecoration-modifiedResourceForeground) !important;
+				color: var(--vscode-gitDecoration-modifiedResourceForeground);
+			}
+
+			.cell-unchanged {
+				background-color: var(--vscode-table-cellBackground);
+			}
+
+			/* 工具类 */
+			.hidden {
+				display: none !important;
+			}
+
+			/* 响应式设计 */
+			@media (max-width: 768px) {
+				.file-info {
+					flex-direction: column;
+					gap: 8px;
+				}
+
+				.diff-summary {
+					flex-wrap: wrap;
+					gap: 8px;
+				}
+			}
+		</style>
+		#{head}
+	</head>
+
+	<body
+		data-placement="#{placement}"
+		data-vscode-context='{ "webview": "#{webviewId}", "webviewInstance": "#{webviewInstanceId}" }'
+	>
+		<div id="excel-diff-container">
+			<!-- 顶部工具栏 -->
+			<div id="toolbar" class="toolbar">
+				<div class="toolbar-left">
+					<div class="logo">
+						<span class="logo-icon">📊</span>
+						<span class="logo-text">Excel Diff Viewer</span>
+					</div>
+				</div>
+				<div class="toolbar-center">
+					<div class="diff-mode-selector">
+						<label for="diff-mode">对比模式:</label>
+						<select id="diff-mode" class="mode-select">
+							<option value="unified">合并视图</option>
+							<option value="split">分割视图</option>
+							<option value="side-by-side">并排视图</option>
+						</select>
+					</div>
+				</div>
+				<div class="toolbar-right">
+					<div class="theme-toggle">
+						<button id="theme-toggle" class="theme-btn" title="切换主题">
+							<span class="theme-icon">🌙</span>
+						</button>
+					</div>
+					<div class="settings-toggle">
+						<button id="settings-toggle" class="settings-btn" title="设置">
+							<span class="settings-icon">⚙️</span>
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- 设置面板 -->
+			<div id="settings-panel" class="settings-panel hidden">
+				<div class="settings-content">
+					<h3>设置</h3>
+					<div class="setting-group">
+						<label for="theme-select">主题:</label>
+						<select id="theme-select" class="setting-select">
+							<option value="auto">自动</option>
+							<option value="light">浅色</option>
+							<option value="dark">深色</option>
+						</select>
+					</div>
+					<div class="setting-group">
+						<label for="highlight-mode">高亮模式:</label>
+						<select id="highlight-mode" class="setting-select">
+							<option value="enhanced">增强</option>
+							<option value="minimal">简约</option>
+							<option value="colorful">彩色</option>
+						</select>
+					</div>
+					<div class="setting-group">
+						<label for="font-size">字体大小:</label>
+						<select id="font-size" class="setting-select">
+							<option value="small">小</option>
+							<option value="medium" selected>中</option>
+							<option value="large">大</option>
+						</select>
+					</div>
+					<div class="setting-actions">
+						<button id="reset-settings" class="btn btn-secondary">重置</button>
+						<button id="close-settings" class="btn btn-primary">关闭</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- 文件选择区域 -->
+			<div id="file-selection" class="file-selection">
+				<div class="file-selection-header">
+					<h2>选择Excel文件进行对比</h2>
+					<p>点击下方按钮选择要对比的Excel文件</p>
+				</div>
+				<div class="file-selection-content">
+					<div class="file-panel" id="old-file-panel">
+						<div class="file-panel-icon">📄</div>
+						<div class="file-panel-label">第一个文件</div>
+						<div class="file-panel-description">点击选择要对比的第一个Excel文件</div>
+						<div class="file-panel-info hidden" id="old-file-info">
+							<div class="file-name" id="old-file-name"></div>
+							<div class="file-path" id="old-file-path"></div>
+						</div>
+						<button class="file-select-btn" id="select-old-file">选择文件</button>
+					</div>
+					
+					<div class="file-panel" id="new-file-panel">
+						<div class="file-panel-icon">📄</div>
+						<div class="file-panel-label">第二个文件</div>
+						<div class="file-panel-description">点击选择要对比的第二个Excel文件</div>
+						<div class="file-panel-info hidden" id="new-file-info">
+							<div class="file-name" id="new-file-name"></div>
+							<div class="file-path" id="new-file-path"></div>
+						</div>
+						<button class="file-select-btn" id="select-new-file">选择文件</button>
+					</div>
+				</div>
+				<div class="file-selection-controls">
+					<button class="btn btn-secondary" id="clear-files">清除选择</button>
+					<button class="btn btn-primary" id="start-compare" disabled>开始对比</button>
+				</div>
+			</div>
+
+			<!-- 加载状态 -->
+			<div id="loading" class="loading hidden">
+				<div class="loading-spinner"></div>
+				<div class="loading-text">正在比较Excel文件...</div>
+			</div>
+
+			<!-- 错误状态 -->
+			<div id="error" class="error hidden">
+				<div class="error-icon">⚠️</div>
+				<div class="error-message"></div>
+			</div>
+
+			<!-- 差异内容 -->
+			<div id="diff-content" class="diff-content hidden">
+				<div class="diff-header">
+					<div class="file-info">
+						<div class="file-old">
+							<span class="file-label">旧文件:</span>
+							<span class="file-path"></span>
+						</div>
+						<div class="file-new">
+							<span class="file-label">新文件:</span>
+							<span class="file-path"></span>
+						</div>
+					</div>
+					<div class="diff-summary">
+						<div class="summary-item added">
+							<span class="summary-label">新增:</span>
+							<span class="summary-value"></span>
+						</div>
+						<div class="summary-item removed">
+							<span class="summary-label">删除:</span>
+							<span class="summary-value"></span>
+						</div>
+						<div class="summary-item modified">
+							<span class="summary-label">修改:</span>
+							<span class="summary-value"></span>
+						</div>
+					</div>
+					<div class="diff-controls">
+						<button class="btn btn-secondary" id="change-files">更换文件</button>
+						<button class="btn btn-primary" id="refresh-compare">刷新对比</button>
+					</div>
+				</div>
+				<div class="diff-tabs">
+					<div class="tab-list"></div>
+					<div class="tab-content">
+						<!-- 合并视图 -->
+						<div id="unified-view" class="diff-view">
+							<div class="unified-content"></div>
+						</div>
+						
+						<!-- 分割视图 -->
+						<div id="split-view" class="diff-view hidden">
+							<div class="split-container">
+								<div class="split-pane left-pane">
+									<div class="pane-header">
+										<span class="pane-title">旧文件</span>
+										<span class="pane-filename"></span>
+									</div>
+									<div class="pane-content"></div>
+								</div>
+								<div class="split-divider"></div>
+								<div class="split-pane right-pane">
+									<div class="pane-header">
+										<span class="pane-title">新文件</span>
+										<span class="pane-filename"></span>
+									</div>
+									<div class="pane-content"></div>
+								</div>
+							</div>
+						</div>
+						
+						<!-- 并排视图 -->
+						<div id="side-by-side-view" class="diff-view hidden">
+							<div class="side-by-side-container">
+								<div class="side-pane left-side">
+									<div class="side-header">
+										<span class="side-title">旧文件</span>
+										<span class="side-filename"></span>
+									</div>
+									<div class="side-content"></div>
+								</div>
+								<div class="side-pane right-side">
+									<div class="side-header">
+										<span class="side-title">新文件</span>
+										<span class="side-filename"></span>
+									</div>
+									<div class="side-content"></div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<script nonce="#{cspNonce}">
+			window.bootstrap = #{state};
+		</script>
+		#{endOfBody}
+	</body>
+</html>
