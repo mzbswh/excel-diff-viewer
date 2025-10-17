@@ -2,6 +2,7 @@
 
 ## 项目概述
 实现 Excel 文件的可视化差异对比功能，支持在文件资源管理器中右键对比，以及集成到 VS Code 的 diff 编辑器。
+支持Vscode Web
 
 ## 开发优先级
 1. **高优先级**: Excel 解析和差异比较核心功能
@@ -13,10 +14,16 @@
 - 考虑内存使用优化
 - 提供清晰的错误信息
 - 保持界面响应性
+- webview界面需要美观且现代化，布局简洁完整
 - 不添加非必要的判断和功能
 - 不自动生成文档
-- 保持代码结构清晰
+- 保持代码、文件、目录结构清晰
 - 禁止硬编码html文件
+- 需要关注大的excel文件加载优化，可以考虑如流式加载等方案
+
+- 可以参考vscode-diff-viewer-main示例项目里的webpack方案, 输出为extension和webview两个js文件或者其他更优更适合的方案
+- 参考示例项目的webview实现方案
+- 可以借助现有的一些库方便开发
 
 ## 构建步骤
 
@@ -41,14 +48,27 @@
 - [x] 创建差异结果数据结构
 
 ### Step 4: 可视化界面开发
-- [x] 创建 `src/webview/excelDiffViewer.ts` - 主界面控制器
-- [x] 创建 `src/webview/excelDiffViewer.html` - 界面模板
-- [x] 创建 `src/webview/excelDiffViewer.css` - CSS样式文件
-- [x] 创建 `src/webview/excelDiffViewer.js` - 前端交互逻辑
-- [x] 创建 `src/webview/webviewController.ts` - webview控制器
-- [x] 实现表格差异高亮显示
-- [x] 实现差异导航功能
+- [x] 创建 `src/webview/index.ts` - 主界面控制器
+- [x] 创建 `src/extension/skeleton.ts` - 动态HTML骨架生成器
+- [x] 创建 `src/webview/styles/main.css` - 现代化CSS样式文件
+- [x] 创建 `src/webview/components/fileSelector.ts` - 文件选择组件
+- [x] 创建 `src/webview/components/toolbar.ts` - 工具栏组件
+- [x] 创建 `src/webview/components/diffTable.ts` - 差异表格组件
+- [x] 实现表格差异高亮显示（渐变背景、动画效果）
+- [x] 实现差异导航功能（前后差异跳转）
 - [x] 集成到extension.ts中，注册webview提供者
+- [x] 现代化UI设计（渐变、阴影、动画、响应式）
+- [x] 添加主题切换功能（自动/浅色/深色）
+- [x] 添加设置面板（高亮模式、字体大小等）
+- [x] 重新设计文件选择界面（专业三栏布局）
+  - [x] 顶部菜单栏（文件/编辑/视图/帮助菜单）
+  - [x] 左右文件选择区（拖拽支持）
+  - [x] 底部状态栏（文件计数、大小、对比按钮）
+  - [x] 文件信息详细展示（名称、路径、大小、时间）
+- [x] 添加拖拽文件支持
+- [x] 添加加载和错误状态的精美展示
+- [x] 实现流畅的页面过渡动画
+- [x] 移动端响应式优化
 
 ### Step 5: 文件资源管理器集成
 - [ ] 在 `package.json` 中配置右键菜单
@@ -93,7 +113,7 @@
 - **前端**: HTML, CSS, JavaScript
 - **测试**: Mocha, VS Code Test API
 
-## 文件结构
+## 文件结构（旧）
 ```
 src/
 ├── extension.ts                 # 主扩展入口

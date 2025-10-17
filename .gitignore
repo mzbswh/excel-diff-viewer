@@ -4,3 +4,9 @@ node_modules/
 .vscode-test/
 *.vsix
 exampleProject/
+
+# Build cache and temporary files
+.tsbuildinfo
+.cache/
+webpack-cache/
+*.log

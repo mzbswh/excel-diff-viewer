@@ -17,44 +17,31 @@ export interface ExcelCellDiff {
 
 export interface ExcelRowDiff {
   rowIndex: number;
-  type: 'added' | 'removed' | 'modified' | 'unchanged';
-  cellDiffs: ExcelCellDiff[];
-  oldRow?: ExcelRow;
-  newRow?: ExcelRow;
+  type: 'added' | 'deleted' | 'modified' | 'unchanged';
+  oldRow?: ExcelCell[];  // 原始行数据（单元格数组）
+  newRow?: ExcelCell[];  // 新行数据（单元格数组）
+  modifiedCells?: number[];  // 修改的单元格索引
 }
 
 export interface ExcelSheetDiff {
   sheetName: string;
-  type: 'added' | 'removed' | 'modified' | 'unchanged';
-  rowDiffs: ExcelRowDiff[];
-  oldSheet?: ExcelSheet;
-  newSheet?: ExcelSheet;
-  summary: {
-    addedRows: number;
-    removedRows: number;
-    modifiedRows: number;
-    unchangedRows: number;
-    addedCells: number;
-    removedCells: number;
-    modifiedCells: number;
+  rows: ExcelRowDiff[];  // 行差异数组
+  stats: {
+    added: number;       // 新增行数
+    deleted: number;     // 删除行数
+    modified: number;    // 修改行数
+    unchanged: number;   // 未变化行数
   };
 }
 
 export interface ExcelFileDiff {
-  oldFile?: ExcelFile;
-  newFile?: ExcelFile;
-  sheetDiffs: ExcelSheetDiff[];
+  sheets: ExcelSheetDiff[];  // 工作表差异数组
+  oldFileName: string;       // 原始文件名
+  newFileName: string;       // 新文件名
   summary: {
-    addedSheets: number;
-    removedSheets: number;
-    modifiedSheets: number;
-    unchangedSheets: number;
-    totalAddedRows: number;
-    totalRemovedRows: number;
-    totalModifiedRows: number;
-    totalAddedCells: number;
-    totalRemovedCells: number;
-    totalModifiedCells: number;
+    totalAdded: number;      // 总新增行数
+    totalDeleted: number;    // 总删除行数
+    totalModified: number;   // 总修改行数
   };
 }
 

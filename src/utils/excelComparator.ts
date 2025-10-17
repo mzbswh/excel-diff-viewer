@@ -51,9 +51,9 @@ export class ExcelComparator {
       const summary = this.calculateSummary(sheetDiffs);
       
       const result: ExcelFileDiff = {
-        oldFile,
-        newFile,
-        sheetDiffs,
+        sheets: sheetDiffs,
+        oldFileName: oldFile.fileName,
+        newFileName: newFile.fileName,
         summary
       };
       
@@ -96,51 +96,50 @@ export class ExcelComparator {
       let sheetDiff: ExcelSheetDiff;
       
       if (!oldSheet && newSheet) {
-        // 新增的工作表
-        sheetDiff = {
-          sheetName,
-          type: 'added',
-          rowDiffs: [],
-          newSheet,
-          summary: {
-            addedRows: newSheet.data.length,
-            removedRows: 0,
-            modifiedRows: 0,
-            unchangedRows: 0,
-            addedCells: this.countCells(newSheet),
-            removedCells: 0,
-            modifiedCells: 0
-          }
-        };
-      } else if (oldSheet && !newSheet) {
-        // 删除的工作表
-        sheetDiff = {
-          sheetName,
-          type: 'removed',
-          rowDiffs: [],
-          oldSheet,
-          summary: {
-            addedRows: 0,
-            removedRows: oldSheet.data.length,
-            modifiedRows: 0,
-            unchangedRows: 0,
-            addedCells: 0,
-            removedCells: this.countCells(oldSheet),
-            modifiedCells: 0
-          }
-        };
-      } else if (oldSheet && newSheet) {
-        // 比较两个工作表
-        const rowDiffs = this.compareRows(oldSheet, newSheet, options);
-        const summary = this.calculateSheetSummary(rowDiffs);
+        // 新增的工作表 - 创建所有新增行
+        const rows: ExcelRowDiff[] = newSheet.data.map(row => ({
+          rowIndex: row.rowIndex,
+          type: 'added' as const,
+          newRow: row.cells
+        }));
         
         sheetDiff = {
           sheetName,
-          type: this.determineSheetType(rowDiffs),
-          rowDiffs,
-          oldSheet,
-          newSheet,
-          summary
+          rows,
+          stats: {
+            added: newSheet.data.length,
+            deleted: 0,
+            modified: 0,
+            unchanged: 0
+          }
+        };
+      } else if (oldSheet && !newSheet) {
+        // 删除的工作表 - 创建所有删除行
+        const rows: ExcelRowDiff[] = oldSheet.data.map(row => ({
+          rowIndex: row.rowIndex,
+          type: 'deleted' as const,
+          oldRow: row.cells
+        }));
+        
+        sheetDiff = {
+          sheetName,
+          rows,
+          stats: {
+            added: 0,
+            deleted: oldSheet.data.length,
+            modified: 0,
+            unchanged: 0
+          }
+        };
+      } else if (oldSheet && newSheet) {
+        // 比较两个工作表（行级别）
+        const rows = this.compareRowsAsUnits(oldSheet, newSheet, options);
+        const stats = this.calculateRowStats(rows);
+        
+        sheetDiff = {
+          sheetName,
+          rows,
+          stats
         };
       } else {
         continue; // 理论上不会发生
@@ -153,9 +152,9 @@ export class ExcelComparator {
   }
   
   /**
-   * 比较两个工作表的行
+   * 比较两个工作表的行（行级别比较）
    */
-  private static compareRows(
+  private static compareRowsAsUnits(
     oldSheet: ExcelSheet, 
     newSheet: ExcelSheet, 
     options: ExcelDiffOptions
@@ -167,48 +166,192 @@ export class ExcelComparator {
     // 检查所有行索引
     const allRowIndexes = new Set([...oldRowMap.keys(), ...newRowMap.keys()]);
     
-    for (const rowIndex of allRowIndexes) {
+    for (const rowIndex of Array.from(allRowIndexes).sort((a, b) => a - b)) {
       const oldRow = oldRowMap.get(rowIndex);
       const newRow = newRowMap.get(rowIndex);
       
-      let rowDiff: ExcelRowDiff;
-      
       if (!oldRow && newRow) {
         // 新增的行
-        rowDiff = {
+        rowDiffs.push({
           rowIndex,
           type: 'added',
-          cellDiffs: this.createAddedRowCells(newRow),
-          newRow
-        };
+          newRow: newRow.cells
+        });
       } else if (oldRow && !newRow) {
         // 删除的行
-        rowDiff = {
+        rowDiffs.push({
           rowIndex,
-          type: 'removed',
-          cellDiffs: this.createRemovedRowCells(oldRow),
-          oldRow
-        };
+          type: 'deleted',
+          oldRow: oldRow.cells
+        });
       } else if (oldRow && newRow) {
-        // 比较两个行
-        const cellDiffs = this.compareCells(oldRow, newRow, options);
-        const type = this.determineRowType(cellDiffs);
+        // 比较两个行的所有单元格
+        const isRowIdentical = this.areRowsIdentical(oldRow, newRow, options);
         
-        rowDiff = {
-          rowIndex,
-          type,
-          cellDiffs,
-          oldRow,
-          newRow
-        };
-      } else {
-        continue; // 理论上不会发生
+        if (isRowIdentical) {
+          // 行完全相同
+          rowDiffs.push({
+            rowIndex,
+            type: 'unchanged',
+            oldRow: oldRow.cells,
+            newRow: newRow.cells
+          });
+        } else {
+          // 行有修改 - 找出修改的单元格索引
+          const modifiedCells = this.findModifiedCells(oldRow, newRow, options);
+          rowDiffs.push({
+            rowIndex,
+            type: 'modified',
+            oldRow: oldRow.cells,
+            newRow: newRow.cells,
+            modifiedCells
+          });
+        }
       }
-      
-      rowDiffs.push(rowDiff);
     }
     
     return rowDiffs;
+  }
+
+  /**
+   * 判断两行是否完全相同
+   */
+  private static areRowsIdentical(
+    oldRow: ExcelRow, 
+    newRow: ExcelRow, 
+    options: ExcelDiffOptions
+  ): boolean {
+    const maxCols = Math.max(oldRow.cells.length, newRow.cells.length);
+    
+    for (let i = 0; i < maxCols; i++) {
+      const oldCell = oldRow.cells[i];
+      const newCell = newRow.cells[i];
+      
+      if (!this.areCellsEqual(oldCell, newCell, options)) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  /**
+   * 找出修改的单元格索引
+   */
+  private static findModifiedCells(
+    oldRow: ExcelRow, 
+    newRow: ExcelRow, 
+    options: ExcelDiffOptions
+  ): number[] {
+    const modifiedCells: number[] = [];
+    const maxCols = Math.max(oldRow.cells.length, newRow.cells.length);
+    
+    for (let i = 0; i < maxCols; i++) {
+      const oldCell = oldRow.cells[i];
+      const newCell = newRow.cells[i];
+      
+      if (!this.areCellsEqual(oldCell, newCell, options)) {
+        modifiedCells.push(i);
+      }
+    }
+    
+    return modifiedCells;
+  }
+
+  /**
+   * 判断两个单元格是否相等
+   */
+  private static areCellsEqual(
+    oldCell: ExcelCell | undefined,
+    newCell: ExcelCell | undefined,
+    options: ExcelDiffOptions
+  ): boolean {
+    // 如果都为空，认为相等
+    if (!oldCell && !newCell) {
+      return true;
+    }
+    
+    // 如果一个为空，另一个不为空
+    if (!oldCell || !newCell) {
+      // 如果忽略空单元格，且为空的单元格确实为空，认为相等
+      if (options.ignoreEmptyCells) {
+        const cell = oldCell || newCell;
+        return this.isCellEmpty(cell);
+      }
+      return false;
+    }
+    
+    // 都不为空，比较值
+    let oldValue = oldCell.value;
+    let newValue = newCell.value;
+    
+    // 如果是字符串，处理空白字符
+    if (typeof oldValue === 'string' && typeof newValue === 'string') {
+      if (options.ignoreWhitespace) {
+        oldValue = oldValue.trim();
+        newValue = newValue.trim();
+      }
+      
+      if (!options.caseSensitive) {
+        oldValue = oldValue.toLowerCase();
+        newValue = newValue.toLowerCase();
+      }
+    }
+    
+    // 比较公式（如果启用）
+    if (options.compareFormulas) {
+      if (oldCell.formula !== newCell.formula) {
+        return false;
+      }
+    }
+    
+    return oldValue === newValue;
+  }
+
+  /**
+   * 判断单元格是否为空
+   */
+  private static isCellEmpty(cell: ExcelCell): boolean {
+    if (!cell) return true;
+    if (cell.value === null || cell.value === undefined) return true;
+    if (typeof cell.value === 'string' && cell.value.trim() === '') return true;
+    return false;
+  }
+
+  /**
+   * 计算行统计信息
+   */
+  private static calculateRowStats(rows: ExcelRowDiff[]): {
+    added: number;
+    deleted: number;
+    modified: number;
+    unchanged: number;
+  } {
+    const stats = {
+      added: 0,
+      deleted: 0,
+      modified: 0,
+      unchanged: 0
+    };
+    
+    for (const row of rows) {
+      switch (row.type) {
+        case 'added':
+          stats.added++;
+          break;
+        case 'deleted':
+          stats.deleted++;
+          break;
+        case 'modified':
+          stats.modified++;
+          break;
+        case 'unchanged':
+          stats.unchanged++;
+          break;
+      }
+    }
+    
+    return stats;
   }
   
   /**
@@ -453,52 +596,20 @@ export class ExcelComparator {
    * 计算文件汇总信息
    */
   private static calculateSummary(sheetDiffs: ExcelSheetDiff[]): ExcelFileDiff['summary'] {
-    let addedSheets = 0;
-    let removedSheets = 0;
-    let modifiedSheets = 0;
-    let unchangedSheets = 0;
-    let totalAddedRows = 0;
-    let totalRemovedRows = 0;
-    let totalModifiedRows = 0;
-    let totalAddedCells = 0;
-    let totalRemovedCells = 0;
-    let totalModifiedCells = 0;
+    let totalAdded = 0;
+    let totalDeleted = 0;
+    let totalModified = 0;
     
     for (const sheetDiff of sheetDiffs) {
-      switch (sheetDiff.type) {
-        case 'added':
-          addedSheets++;
-          break;
-        case 'removed':
-          removedSheets++;
-          break;
-        case 'modified':
-          modifiedSheets++;
-          break;
-        case 'unchanged':
-          unchangedSheets++;
-          break;
-      }
-      
-      totalAddedRows += sheetDiff.summary.addedRows;
-      totalRemovedRows += sheetDiff.summary.removedRows;
-      totalModifiedRows += sheetDiff.summary.modifiedRows;
-      totalAddedCells += sheetDiff.summary.addedCells;
-      totalRemovedCells += sheetDiff.summary.removedCells;
-      totalModifiedCells += sheetDiff.summary.modifiedCells;
+      totalAdded += sheetDiff.stats.added;
+      totalDeleted += sheetDiff.stats.deleted;
+      totalModified += sheetDiff.stats.modified;
     }
     
     return {
-      addedSheets,
-      removedSheets,
-      modifiedSheets,
-      unchangedSheets,
-      totalAddedRows,
-      totalRemovedRows,
-      totalModifiedRows,
-      totalAddedCells,
-      totalRemovedCells,
-      totalModifiedCells
+      totalAdded,
+      totalDeleted,
+      totalModified
     };
   }
   
