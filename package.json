@@ -64,8 +64,30 @@
       {
         "command": "excel-diff-viewer.testWebview",
         "title": "excel diff viewer: Test Webview"
+      },
+      {
+        "command": "excel-diff-viewer.selectToCompare",
+        "title": "excel Diff Viewer: 选择以对比"
+      },
+      {
+        "command": "excel-diff-viewer.compareWithSelected",
+        "title": "excel Diff Viewer: 与已选择的文件对比"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "excel-diff-viewer.selectToCompare",
+          "when": "resourceExtname == .xlsx || resourceExtname == .xls || resourceExtname == .csv",
+          "group": "2_workspace@1"
+        },
+        {
+          "command": "excel-diff-viewer.compareWithSelected",
+          "when": "resourceExtname == .xlsx || resourceExtname == .xls || resourceExtname == .csv",
+          "group": "2_workspace@2"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",

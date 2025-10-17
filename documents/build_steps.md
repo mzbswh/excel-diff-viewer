@@ -71,11 +71,11 @@
 - [x] 移动端响应式优化
 
 ### Step 5: 文件资源管理器集成
-- [ ] 在 `package.json` 中配置右键菜单
-- [ ] 实现 "Select to compare" 功能
-- [ ] 实现 "Compare by Excel Diff Viewer" 功能
-- [ ] 创建文件选择状态管理
-- [ ] 实现文件路径验证
+- [x] 在 `package.json` 中配置右键菜单
+- [x] 实现 "选择以对比" 功能
+- [x] 实现 "与已选择的文件对比" 功能
+- [x] 创建文件选择状态管理
+- [x] 实现文件路径验证
 
 ### Step 6: VS Code Diff 编辑器集成
 - [ ] 配置 diff 编辑器提供者

@@ -16,6 +16,7 @@ export interface ExcelDiffProviderArgs {
 export class ExcelDiffProvider implements Disposable {
   private static readonly viewType = 'excelDiffViewer';
   private static panels: Map<string, vscode.WebviewPanel> = new Map();
+  private static selectedFileForCompare: string | undefined = undefined;
   private readonly _disposable: Disposable;
   private _currentDiff?: ExcelFileDiff;
   private _oldFilePath?: string;
@@ -33,6 +34,34 @@ export class ExcelDiffProvider implements Disposable {
 
   dispose(): void {
     this._disposable.dispose();
+  }
+
+  // 文件选择状态管理方法
+  public static getSelectedFile(): string | undefined {
+    return this.selectedFileForCompare;
+  }
+
+  public static setSelectedFile(filePath: string | undefined): void {
+    this.selectedFileForCompare = filePath;
+  }
+
+  public static clearSelectedFile(): void {
+    this.selectedFileForCompare = undefined;
+  }
+
+  // 文件路径验证方法
+  private static isExcelFile(filePath: string): boolean {
+    const ext = filePath.toLowerCase();
+    return ext.endsWith('.xlsx') || ext.endsWith('.xls') || ext.endsWith('.csv');
+  }
+
+  private static async validateFilePath(filePath: string): Promise<boolean> {
+    try {
+      await fsPromises.access(filePath);
+      return this.isExcelFile(filePath);
+    } catch {
+      return false;
+    }
   }
 
   public static registerContributions(args: ExcelDiffProviderArgs): vscode.Disposable[] {
@@ -57,6 +86,64 @@ export class ExcelDiffProvider implements Disposable {
           const errorMsg = `测试webview失败: ${error}`;
           vscode.window.showErrorMessage(errorMsg);
           Logger.error(`Error testing webview: ${error}`, 'Extension');
+        }
+      }),
+      vscode.commands.registerCommand('excel-diff-viewer.selectToCompare', (uri: vscode.Uri) => {
+        if (!uri || !uri.fsPath) {
+          vscode.window.showErrorMessage('无法获取文件路径');
+          return;
+        }
+
+        // 验证文件格式
+        const ext = uri.fsPath.toLowerCase();
+        if (!ext.endsWith('.xlsx') && !ext.endsWith('.xls') && !ext.endsWith('.csv')) {
+          vscode.window.showErrorMessage('请选择 Excel 文件 (.xlsx, .xls, .csv)');
+          return;
+        }
+
+        this.setSelectedFile(uri.fsPath);
+        const relativePath = vscode.workspace.asRelativePath(uri);
+        
+        // 使用状态栏消息，3秒后自动消失
+        vscode.window.setStatusBarMessage(`✓ 已选择文件: ${relativePath}`, 3000);
+        Logger.info(`Selected file for comparison: ${uri.fsPath}`, 'Extension');
+      }),
+      vscode.commands.registerCommand('excel-diff-viewer.compareWithSelected', async (uri: vscode.Uri) => {
+        if (!uri || !uri.fsPath) {
+          vscode.window.showErrorMessage('无法获取文件路径');
+          return;
+        }
+
+        const selectedFile = this.getSelectedFile();
+        if (!selectedFile) {
+          vscode.window.showWarningMessage('请先右键选择一个文件进行对比');
+          return;
+        }
+
+        // 验证文件格式
+        const ext = uri.fsPath.toLowerCase();
+        if (!ext.endsWith('.xlsx') && !ext.endsWith('.xls') && !ext.endsWith('.csv')) {
+          vscode.window.showErrorMessage('请选择 Excel 文件 (.xlsx, .xls, .csv)');
+          return;
+        }
+
+        // 避免选择同一个文件
+        if (selectedFile === uri.fsPath) {
+          vscode.window.showWarningMessage('不能与同一个文件进行对比');
+          return;
+        }
+
+        try {
+          Logger.info(`Comparing files: ${selectedFile} vs ${uri.fsPath}`, 'Extension');
+          
+          // 自动打开 diff viewer 并显示对比结果
+          await this.createOrShow(args.extensionContext, selectedFile, uri.fsPath);
+          
+          // 清除选择状态
+          this.clearSelectedFile();
+        } catch (error) {
+          vscode.window.showErrorMessage(`对比文件失败: ${error}`);
+          Logger.error(`Error comparing files: ${error}`, 'Extension');
         }
       })
     ];
