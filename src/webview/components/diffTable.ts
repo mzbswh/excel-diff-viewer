@@ -7,6 +7,7 @@ export class DiffTable {
   private currentSheetIndex: number = 0;
   private diffCells: Array<{ rowIndex: number; colIndex: number; type: string }> = [];
   private navigationIndex: number = 0;
+  private collapsedRegions: Set<number> = new Set();  // 存储折叠的区域ID
 
   constructor(app: any) {
     this.app = app;
@@ -30,10 +31,24 @@ export class DiffTable {
       } else if (nextDiff) {
         this.navigateToNext();
       }
+      
+      // 监听折叠区域点击展开
+      const collapsedRow = target.closest('.collapsed-region');
+      if (collapsedRow) {
+        const regionId = parseInt(collapsedRow.getAttribute('data-region-id') || '0');
+        this.toggleRegion(regionId);
+      }
     });
 
     // 监听diff模式变化
     document.addEventListener('diffModeChanged', () => {
+      this.renderCurrentSheet();
+    });
+
+    // 监听折叠状态切换
+    document.addEventListener('unchangedRowsToggled', () => {
+      // 清空已展开的区域记录，因为全局折叠/展开状态改变了
+      this.collapsedRegions.clear();
       this.renderCurrentSheet();
     });
 
@@ -199,6 +214,10 @@ export class DiffTable {
       )
     ));
 
+    // 根据 showUnchangedRows 决定是否需要分组
+    const showUnchanged = this.getShowUnchangedRows();
+    const processedRows = showUnchanged ? rows : this.groupUnchangedRows(rows);
+
     let html = '<div class="side-by-side-container">';
     
     // 左侧面板：原始文件
@@ -209,9 +228,12 @@ export class DiffTable {
     html += this.renderTableHeader(maxCols);
     html += '<tbody>';
     
-    rows.forEach((row: any) => {
-      if (row.type !== 'added') {
-        html += this.renderRowForSideBySide(row, 'old', maxCols);
+    processedRows.forEach((item: any) => {
+      if (item.type === 'collapsed-region') {
+        // 渲染折叠区域
+        html += this.renderCollapsedRegionSideBySide(item.regionId, item.rows);
+      } else if (item.type !== 'added') {
+        html += this.renderRowForSideBySide(item, 'old', maxCols);
       }
     });
     
@@ -225,9 +247,12 @@ export class DiffTable {
     html += this.renderTableHeader(maxCols);
     html += '<tbody>';
     
-    rows.forEach((row: any) => {
-      if (row.type !== 'deleted') {
-        html += this.renderRowForSideBySide(row, 'new', maxCols);
+    processedRows.forEach((item: any) => {
+      if (item.type === 'collapsed-region') {
+        // 渲染折叠区域
+        html += this.renderCollapsedRegionSideBySide(item.regionId, item.rows);
+      } else if (item.type !== 'deleted') {
+        html += this.renderRowForSideBySide(item, 'new', maxCols);
       }
     });
     
@@ -254,25 +279,34 @@ export class DiffTable {
       )
     ));
 
+    // 根据 showUnchangedRows 决定是否需要分组
+    const showUnchanged = this.getShowUnchangedRows();
+    const processedRows = showUnchanged ? rows : this.groupUnchangedRows(rows);
+
     let html = '<div class="inline-container">';
     html += '<table class="diff-table inline">';
     html += this.renderTableHeaderWithMarker(maxCols);
     html += '<tbody>';
     
-    rows.forEach((row: any) => {
-      switch (row.type) {
-        case 'deleted':
-          html += this.renderDeletedRow(row, maxCols);
-          break;
-        case 'added':
-          html += this.renderAddedRow(row, maxCols);
-          break;
-        case 'modified':
-          html += this.renderModifiedRow(row, maxCols);
-          break;
-        case 'unchanged':
-          html += this.renderUnchangedRow(row, maxCols);
-          break;
+    processedRows.forEach((item: any) => {
+      if (item.type === 'collapsed-region') {
+        // 渲染折叠区域
+        html += this.renderCollapsedRegionInline(item.regionId, item.rows, maxCols);
+      } else {
+        switch (item.type) {
+          case 'deleted':
+            html += this.renderDeletedRow(item, maxCols);
+            break;
+          case 'added':
+            html += this.renderAddedRow(item, maxCols);
+            break;
+          case 'modified':
+            html += this.renderModifiedRow(item, maxCols);
+            break;
+          case 'unchanged':
+            html += this.renderUnchangedRow(item, maxCols);
+            break;
+        }
       }
     });
     
@@ -651,5 +685,145 @@ export class DiffTable {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /**
+   * 将连续的未改变行分组
+   */
+  private groupUnchangedRows(rows: any[]): any[] {
+    const grouped: any[] = [];
+    let unchangedStart = -1;
+    let regionId = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      
+      if (row.type === 'unchanged') {
+        if (unchangedStart === -1) {
+          unchangedStart = i;
+        }
+      } else {
+        // 遇到非 unchanged 行，结束之前的 unchanged 区域
+        if (unchangedStart !== -1) {
+          grouped.push({
+            type: 'collapsed-region',
+            regionId: regionId++,
+            startIndex: unchangedStart,
+            endIndex: i - 1,
+            rows: rows.slice(unchangedStart, i)
+          });
+          unchangedStart = -1;
+        }
+        grouped.push(row);
+      }
+    }
+
+    // 处理最后的 unchanged 区域
+    if (unchangedStart !== -1) {
+      grouped.push({
+        type: 'collapsed-region',
+        regionId: regionId++,
+        startIndex: unchangedStart,
+        endIndex: rows.length - 1,
+        rows: rows.slice(unchangedStart)
+      });
+    }
+
+    return grouped;
+  }
+
+  /**
+   * 渲染折叠占位符（并排视图）
+   */
+  private renderCollapsedRegionSideBySide(regionId: number, rows: any[]): string {
+    const count = rows.length;
+    const isExpanded = this.collapsedRegions.has(regionId);
+    
+    if (isExpanded) {
+      // 展开状态：显示所有行
+      let html = '';
+      rows.forEach(row => {
+        html += this.renderRowForSideBySide(row, 'old', this.getMaxCols());
+      });
+      return html;
+    } else {
+      // 折叠状态：VS Code 风格的折叠显示
+      return `<tr class="collapsed-region" data-region-id="${regionId}">
+        <td colspan="999" class="collapsed-line">
+          <div class="collapsed-divider"></div>
+          <div class="collapsed-info">
+            <span class="collapse-icon">↕</span>
+            <span class="collapse-text">${count} 行未改变</span>
+          </div>
+        </td>
+      </tr>`;
+    }
+  }
+
+  /**
+   * 渲染折叠占位符（分栏视图）
+   */
+  private renderCollapsedRegionInline(regionId: number, rows: any[], maxCols: number): string {
+    const count = rows.length;
+    const isExpanded = this.collapsedRegions.has(regionId);
+    
+    if (isExpanded) {
+      // 展开状态：显示所有行
+      let html = '';
+      rows.forEach(row => {
+        html += this.renderUnchangedRow(row, maxCols);
+      });
+      return html;
+    } else {
+      // 折叠状态：VS Code 风格的折叠显示
+      return `<tr class="collapsed-region" data-region-id="${regionId}">
+        <td colspan="999" class="collapsed-line">
+          <div class="collapsed-divider"></div>
+          <div class="collapsed-info">
+            <span class="collapse-icon">↕</span>
+            <span class="collapse-text">${count} 行未改变</span>
+          </div>
+        </td>
+      </tr>`;
+    }
+  }
+
+  /**
+   * 切换区域展开/折叠状态
+   */
+  private toggleRegion(regionId: number): void {
+    if (this.collapsedRegions.has(regionId)) {
+      this.collapsedRegions.delete(regionId);
+    } else {
+      this.collapsedRegions.add(regionId);
+    }
+    this.renderCurrentSheet();
+  }
+
+  /**
+   * 获取最大列数
+   */
+  private getMaxCols(): number {
+    if (!this.currentDiff) return 0;
+    const sheetDiff = this.currentDiff.sheets[this.currentSheetIndex];
+    if (!sheetDiff) return 0;
+    
+    return Math.max(...sheetDiff.rows.map((row: any) => 
+      Math.max(
+        row.oldRow?.length || 0,
+        row.newRow?.length || 0
+      )
+    ));
+  }
+
+  /**
+   * 获取 toolbar 实例以访问 showUnchangedRows 状态
+   */
+  private getShowUnchangedRows(): boolean {
+    // 通过 app 访问 toolbar
+    if (this.app && this.app.toolbar) {
+      return this.app.toolbar.getShowUnchangedRows();
+    }
+    return false;
   }
 }

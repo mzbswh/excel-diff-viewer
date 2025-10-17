@@ -4,6 +4,7 @@ export class Toolbar {
   private app: any;
   private currentDiffMode: 'side-by-side' | 'inline' = 'side-by-side';  // 简化为两种模式
   public currentTheme: 'auto' | 'light' | 'dark' = 'auto'; // 改为 public 以便外部访问
+  private showUnchangedRows: boolean = true;  // 默认显示全部行（非折叠状态）
 
   constructor(app: any) {
     this.app = app;
@@ -12,8 +13,32 @@ export class Toolbar {
   public initialize(): void {
     this.loadSettings();
     this.bindEvents();
+    this.setupAutoThemeListener();
     this.updateTheme();
     this.updateDiffMode();
+    this.updateUnchangedRowsButton();
+  }
+
+  /**
+   * 设置系统主题监听器（用于自动主题模式）
+   */
+  private setupAutoThemeListener(): void {
+    // 监听系统主题变化
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    
+    const handleThemeChange = () => {
+      if (this.currentTheme === 'auto') {
+        this.updateTheme();
+      }
+    };
+    
+    // 现代浏览器使用 addEventListener
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleThemeChange);
+    } else {
+      // 旧版浏览器兼容
+      mediaQuery.addListener(handleThemeChange);
+    }
   }
 
   private bindEvents(): void {
@@ -28,6 +53,7 @@ export class Toolbar {
       const refreshCompare = target.closest('#refresh-compare');
       const closeSettings = target.closest('#close-settings');
       const resetSettings = target.closest('#reset-settings');
+      const toggleUnchanged = target.closest('#toggle-unchanged');
       
       if (themeToggle) {
         this.toggleTheme();
@@ -41,6 +67,8 @@ export class Toolbar {
         this.closeSettings();
       } else if (resetSettings) {
         this.resetSettings();
+      } else if (toggleUnchanged) {
+        this.toggleUnchangedRows();
       }
     });
 
@@ -75,20 +103,25 @@ export class Toolbar {
 
   public updateTheme(): void {
     const container = document.getElementById('excel-diff-container');
-    const themeIcons = document.querySelectorAll('.theme-icon'); // 查找所有主题图标
+    const themeIcons = document.querySelectorAll('.theme-icon');
     
     if (container) {
       if (this.currentTheme === 'auto') {
-        container.removeAttribute('data-theme');
-        // 更新所有主题图标
+        // 自动模式：根据系统主题设置
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const actualTheme = prefersDark ? 'dark' : 'light';
+        container.setAttribute('data-theme', actualTheme);
+        
+        // 更新图标为自动模式
         themeIcons.forEach(icon => {
-          icon.textContent = '🌓'; // 自动模式
+          icon.textContent = '🌓'; // 自动模式图标
         });
       } else {
+        // 手动模式：使用用户选择的主题
         container.setAttribute('data-theme', this.currentTheme);
-        // 更新所有主题图标
+        
+        // 更新图标
         themeIcons.forEach(icon => {
-          // 修复：浅色主题=太阳图标，深色主题=月亮图标
           icon.textContent = this.currentTheme === 'light' ? '☀️' : '🌙';
         });
       }
@@ -164,10 +197,38 @@ export class Toolbar {
     }
   }
 
+  private toggleUnchangedRows(): void {
+    this.showUnchangedRows = !this.showUnchangedRows;
+    this.updateUnchangedRowsButton();
+    this.saveSettings();
+    
+    // 触发自定义事件通知 diffTable 重新渲染
+    const event = new Event('unchangedRowsToggled');
+    document.dispatchEvent(event);
+  }
+
+  private updateUnchangedRowsButton(): void {
+    const button = document.getElementById('toggle-unchanged');
+    if (button) {
+      if (this.showUnchangedRows) {
+        button.classList.add('active');
+        button.title = '隐藏未改变的行';
+      } else {
+        button.classList.remove('active');
+        button.title = '显示全部行';
+      }
+    }
+  }
+
+  public getShowUnchangedRows(): boolean {
+    return this.showUnchangedRows;
+  }
+
   private loadSettings(): void {
     const settings = JSON.parse(localStorage.getItem('excelDiffViewerSettings') || '{}');
     this.currentTheme = settings.theme || 'auto';
     this.currentDiffMode = settings.diffMode || 'side-by-side';
+    this.showUnchangedRows = settings.showUnchangedRows !== undefined ? settings.showUnchangedRows : true;
     
     // 应用设置
     const themeSelect = document.getElementById('theme-select') as HTMLSelectElement;
@@ -187,6 +248,9 @@ export class Toolbar {
     if (fontSizeSelect) {
       fontSizeSelect.value = settings.fontSize || 'medium';
     }
+    
+    // 更新未改变行按钮状态
+    this.updateUnchangedRowsButton();
   }
 
   private saveSettings(): void {
@@ -196,6 +260,7 @@ export class Toolbar {
     const settings = {
       theme: this.currentTheme,
       diffMode: this.currentDiffMode,
+      showUnchangedRows: this.showUnchangedRows,
       highlightMode: highlightModeSelect ? highlightModeSelect.value : 'enhanced',
       fontSize: fontSizeSelect ? fontSizeSelect.value : 'medium'
     };

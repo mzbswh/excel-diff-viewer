@@ -798,14 +798,20 @@
   width: 0;
   height: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.2);  /* 白色半透明，更柔和 */
   transform: translate(-50%, -50%);
   transition: width 0.6s, height 0.6s;
+  pointer-events: none;  /* 避免影响点击事件 */
 }
 
 .btn-compare:hover:not(:disabled)::before {
   width: 300px;
   height: 300px;
+}
+
+/* 禁用状态下隐藏伪元素效果 */
+.btn-compare:disabled::before {
+  display: none;
 }
 
 .btn-compare:hover:not(:disabled) {
@@ -832,6 +838,12 @@
   display: flex;
   align-items: center;
   line-height: 1;
+  width: auto;
+  height: auto;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;  /* 继承按钮的白色 */
 }
 
 .btn-compare .btn-text {
@@ -840,6 +852,12 @@
   display: flex;
   align-items: center;
   line-height: 1;
+}
+
+/* 禁用状态下的图标和文字颜色 */
+.btn-compare:disabled .btn-icon,
+.btn-compare:disabled .btn-text {
+  color: rgba(255, 255, 255, 0.6);
 }
 
 /* ================================================================================
@@ -1231,7 +1249,7 @@
 
 .diff-table th,
 .diff-table td {
-  border: 1px solid var(--border-light);
+  border: 0.5px solid var(--border-light);  /* 使用更细的边框 */
   padding: 10px 12px;
   text-align: left;
   vertical-align: top;
@@ -1287,50 +1305,9 @@
   background-color: var(--bg-secondary);
 }
 
-/* 差异高亮 */
-.cell-added {
-  background: linear-gradient(90deg, rgba(76, 175, 80, 0.15) 0%, rgba(76, 175, 80, 0.05) 100%) !important;
-  border-left: 3px solid var(--diff-added-color) !important;
-  animation: highlightFade 0.6s ease-out;
-}
-
-.cell-removed {
-  background: linear-gradient(90deg, rgba(244, 67, 54, 0.15) 0%, rgba(244, 67, 54, 0.05) 100%) !important;
-  border-left: 3px solid var(--diff-removed-color) !important;
-  animation: highlightFade 0.6s ease-out;
-}
-
-.cell-modified {
-  background: linear-gradient(90deg, rgba(255, 152, 0, 0.15) 0%, rgba(255, 152, 0, 0.05) 100%) !important;
-  border-left: 3px solid var(--diff-modified-color) !important;
-  animation: highlightFade 0.6s ease-out;
-}
-
-@keyframes highlightFade {
-  0% {
-    opacity: 0;
-    transform: translateX(-4px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
+/* 差异高亮 - 已改为行级别差异，保留这些类但简化样式 */
 .cell-unchanged {
   background-color: var(--bg-primary);
-}
-
-.diff-table tr:hover .cell-added {
-  background: linear-gradient(90deg, rgba(76, 175, 80, 0.25) 0%, rgba(76, 175, 80, 0.1) 100%) !important;
-}
-
-.diff-table tr:hover .cell-removed {
-  background: linear-gradient(90deg, rgba(244, 67, 54, 0.25) 0%, rgba(244, 67, 54, 0.1) 100%) !important;
-}
-
-.diff-table tr:hover .cell-modified {
-  background: linear-gradient(90deg, rgba(255, 152, 0, 0.25) 0%, rgba(255, 152, 0, 0.1) 100%) !important;
 }
 
 /* 单元格内容 */
@@ -1691,10 +1668,40 @@ td.highlighted {
   font-weight: bold;
 }
 
+/* 修改的单元格 - 连续整体显示，降低视觉噪音 */
 .cell-modified {
   background-color: #fff3cd;
   font-weight: 600;
-  border: 2px solid var(--warning-color);
+  position: relative;
+  /* 默认只有上下边框，形成连续效果 */
+  box-shadow: 
+    inset 0 1px 0 0 var(--warning-color),     /* 上边框 */
+    inset 0 -1px 0 0 var(--warning-color);    /* 下边框 */
+}
+
+/* 修改单元格：添加左边框（如果左边不是修改单元格） */
+.cell-modified:not(.cell-modified + .cell-modified) {
+  box-shadow: 
+    inset 0 1px 0 0 var(--warning-color),     /* 上 */
+    inset 0 -1px 0 0 var(--warning-color),    /* 下 */
+    inset 1px 0 0 0 var(--warning-color);     /* 左 */
+}
+
+/* 修改单元格：添加右边框（如果是最后一个或右边不是修改单元格） */
+.cell-modified:not(:has(+ .cell-modified)) {
+  box-shadow: 
+    inset 0 1px 0 0 var(--warning-color),     /* 上 */
+    inset 0 -1px 0 0 var(--warning-color),    /* 下 */
+    inset -1px 0 0 0 var(--warning-color);    /* 右 */
+}
+
+/* 修改单元格：既是首又是尾（单独的修改单元格） */
+.cell-modified:not(.cell-modified + .cell-modified):not(:has(+ .cell-modified)) {
+  box-shadow: 
+    inset 0 1px 0 0 var(--warning-color),     /* 上 */
+    inset 0 -1px 0 0 var(--warning-color),    /* 下 */
+    inset 1px 0 0 0 var(--warning-color),     /* 左 */
+    inset -1px 0 0 0 var(--warning-color);    /* 右 */
 }
 
 /* 未修改行 */
@@ -1764,7 +1771,32 @@ td.highlighted {
 
 [data-theme="dark"] .cell-modified {
   background-color: #5b5b28;
-  border-color: #f9a825;
+  /* 深色主题默认上下边框 */
+  box-shadow: 
+    inset 0 1px 0 0 #f9a825,
+    inset 0 -1px 0 0 #f9a825;
+}
+
+[data-theme="dark"] .cell-modified:not(.cell-modified + .cell-modified) {
+  box-shadow: 
+    inset 0 1px 0 0 #f9a825,
+    inset 0 -1px 0 0 #f9a825,
+    inset 1px 0 0 0 #f9a825;
+}
+
+[data-theme="dark"] .cell-modified:not(:has(+ .cell-modified)) {
+  box-shadow: 
+    inset 0 1px 0 0 #f9a825,
+    inset 0 -1px 0 0 #f9a825,
+    inset -1px 0 0 0 #f9a825;
+}
+
+[data-theme="dark"] .cell-modified:not(.cell-modified + .cell-modified):not(:has(+ .cell-modified)) {
+  box-shadow: 
+    inset 0 1px 0 0 #f9a825,
+    inset 0 -1px 0 0 #f9a825,
+    inset 1px 0 0 0 #f9a825,
+    inset -1px 0 0 0 #f9a825;
 }
 
 /* ================================================================================
@@ -1776,4 +1808,159 @@ td.highlighted {
   text-align: center;
   color: var(--text-muted);
   font-size: 16px;
+}
+
+/* ================================================================================
+   折叠区域样式
+   ================================================================================ */
+
+/* 折叠区域：类似 VS Code 代码折叠的设计（增强显眼度） */
+.collapsed-region {
+  height: 18px;
+  cursor: pointer;
+  background: linear-gradient(to right, 
+    transparent 0%, 
+    rgba(100, 149, 237, 0.08) 10px,     /* 淡蓝色背景，更显眼 */
+    rgba(100, 149, 237, 0.08) calc(100% - 10px), 
+    transparent 100%);
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.collapsed-region:hover {
+  background: linear-gradient(to right, 
+    transparent 0%, 
+    rgba(100, 149, 237, 0.15) 10px,     /* 悬停时更深的蓝色 */
+    rgba(100, 149, 237, 0.15) calc(100% - 10px), 
+    transparent 100%);
+}
+
+.collapsed-line {
+  position: relative;
+  padding: 0;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* VS Code 风格的折叠虚线（增强对比度） */
+.collapsed-divider {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 0;
+  border: none;
+  border-top: 1px dotted rgba(100, 149, 237, 0.4);  /* 蓝色虚线 */
+  opacity: 0.8;
+}
+
+/* 折叠信息标签（增强显眼度） */
+.collapsed-info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  background-color: rgba(100, 149, 237, 0.12);     /* 淡蓝色背景 */
+  color: #4a7fc1;                                  /* 深蓝色文字 */
+  font-size: 11px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  z-index: 1;
+  border-radius: 4px;
+  border: 1px solid rgba(100, 149, 237, 0.25);    /* 蓝色边框 */
+  transition: all 0.15s ease;
+  line-height: 14px;
+  height: 16px;
+  box-shadow: 0 1px 3px rgba(100, 149, 237, 0.1); /* 淡蓝色阴影 */
+}
+
+.collapsed-region:hover .collapsed-info {
+  background-color: rgba(100, 149, 237, 0.2);     /* 悬停时更深 */
+  color: #2962b8;                                  /* 更深的蓝色 */
+  border-color: rgba(100, 149, 237, 0.4);
+  box-shadow: 0 2px 6px rgba(100, 149, 237, 0.2);
+}
+
+/* 折叠图标（增强显眼度） */
+.collapse-icon {
+  font-size: 10px;
+  color: #4a7fc1;                                  /* 深蓝色图标 */
+  transition: color 0.15s ease;
+  display: inline-block;
+  line-height: 1;
+  opacity: 0.9;
+}
+
+.collapsed-region:hover .collapse-icon {
+  color: #2962b8;
+  opacity: 1;
+}
+
+/* 折叠文本 */
+.collapse-text {
+  font-size: 11px;
+  font-weight: 500;                                /* 加粗文字 */
+  white-space: nowrap;
+  line-height: 1;
+  opacity: 1;
+}
+
+.collapsed-region:hover .collapse-text {
+  opacity: 1;
+}
+
+/* 切换按钮状态 */
+#toggle-unchanged.active {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+#toggle-unchanged.active .unchanged-icon {
+  filter: brightness(1.2);
+}
+
+/* 深色主题折叠区域（增强显眼度） */
+[data-theme="dark"] .collapsed-region {
+  background: linear-gradient(to right, 
+    transparent 0%, 
+    rgba(79, 134, 255, 0.12) 10px,      /* 深色主题用更亮的蓝色 */
+    rgba(79, 134, 255, 0.12) calc(100% - 10px), 
+    transparent 100%);
+}
+
+[data-theme="dark"] .collapsed-region:hover {
+  background: linear-gradient(to right, 
+    transparent 0%, 
+    rgba(79, 134, 255, 0.2) 10px,       /* 悬停时更亮 */
+    rgba(79, 134, 255, 0.2) calc(100% - 10px), 
+    transparent 100%);
+}
+
+[data-theme="dark"] .collapsed-divider {
+  border-top-color: rgba(79, 134, 255, 0.5);  /* 蓝色虚线 */
+  opacity: 0.7;
+}
+
+[data-theme="dark"] .collapsed-info {
+  background-color: rgba(79, 134, 255, 0.15);
+  color: #7fb3ff;                              /* 亮蓝色文字 */
+  border-color: rgba(79, 134, 255, 0.3);
+  box-shadow: 0 1px 3px rgba(79, 134, 255, 0.15);
+}
+
+[data-theme="dark"] .collapsed-region:hover .collapsed-info {
+  background-color: rgba(79, 134, 255, 0.25);
+  color: #a3c9ff;                              /* 更亮的蓝色 */
+  border-color: rgba(79, 134, 255, 0.5);
+  box-shadow: 0 2px 6px rgba(79, 134, 255, 0.25);
+}
+
+[data-theme="dark"] .collapse-icon {
+  color: #7fb3ff;
+}
+
+[data-theme="dark"] .collapsed-region:hover .collapse-icon {
+  color: #a3c9ff;
 }

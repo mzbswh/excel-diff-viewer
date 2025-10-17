@@ -55,6 +55,11 @@ export class SkeletonBuilder {
       --spacing-md: 1rem;
       --spacing-lg: 1.5rem;
       --spacing-xl: 3rem;
+      
+      /* 自动主题：根据 VS Code 主题自动适配 */
+      --diff-added-bg: var(--vscode-diffEditor-insertedTextBackground, rgba(76, 175, 80, 0.2));
+      --diff-removed-bg: var(--vscode-diffEditor-removedTextBackground, rgba(244, 67, 54, 0.2));
+      --diff-modified-bg: var(--vscode-diffEditor-diagonalFill, rgba(255, 152, 0, 0.2));
     }
 
     [data-theme="light"] {
@@ -213,6 +218,9 @@ export class SkeletonBuilder {
             <div class="toolbar-right">
                 <button class="btn btn-icon" id="change-files" title="重新选择文件">
                     <span>🔄</span>
+                </button>
+                <button class="btn btn-icon" id="toggle-unchanged" title="折叠未改变的行">
+                    <span class="unchanged-icon">👁️</span>
                 </button>
                 <button class="btn btn-icon theme-btn" id="theme-toggle" title="切换主题（自动/浅色/深色）">
                     <span class="theme-icon">🌓</span>
