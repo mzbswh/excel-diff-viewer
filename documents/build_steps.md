@@ -77,11 +77,30 @@
 - [x] 创建文件选择状态管理
 - [x] 实现文件路径验证
 
-### Step 6: VS Code Diff 编辑器集成
-- [ ] 配置 diff 编辑器提供者
-- [ ] 实现 Excel 文件 diff 内容提供者
-- [ ] 集成到 Git diff 功能
-- [ ] 处理二进制文件差异显示
+### Step 6: Git 版本对比集成 ✅ 已完成
+- [x] 实现 Git 文件处理器（gitFileHandler.ts）
+- [x] 添加"与 HEAD 对比"命令（文件资源管理器右键菜单）
+- [x] 添加"与 Git 版本对比"命令（SCM 视图右键菜单）
+- [x] 在 SCM 面板中为 Excel 文件添加右键菜单（主要功能）
+- [x] 在 Timeline 时间轴视图中添加右键菜单
+- [x] 在编辑器标题栏中添加右键菜单
+- [x] 检查文件是否在 Git 仓库中
+- [x] 获取文件的 HEAD 版本并创建临时文件
+- [x] 支持从 SCM 资源状态对比
+- [x] 使用 `gitOpenRepositoryCount` 上下文条件显示菜单
+- [x] 完整文档：`documents/git_integration_status.md`
+
+**实现方案：右键菜单集成**
+- ✅ `scm/resourceState/context` - SCM 面板右键菜单（主要场景）
+- ✅ `explorer/context` - 文件资源管理器右键菜单
+- ✅ `editor/title/context` - 编辑器标题栏右键菜单
+- ✅ `timeline/item/context` - Timeline 时间轴右键菜单
+- ✅ 所有"显示 Open Changes 菜单项的地方"都已覆盖
+
+**放弃的方案：编辑器工具栏按钮**
+- ❌ 原因：VS Code API 限制，`tab.input` 在 Git diff 中返回 `undefined`
+- ❌ 原因：`isInDiffEditor` 上下文变量不可靠
+- ❌ 原因：二进制 Excel 文件无法通过标准 diff 编辑器 API 处理
 
 ### Step 7: 命令和快捷键
 - [ ] 添加 "Open Excel Diff Viewer" 命令

@@ -20,7 +20,10 @@ export class ExcelReader {
    * 检查文件是否为支持的 Excel 格式
    */
   public static isExcelFile(filePath: string): boolean {
-    const ext = path.extname(filePath).toLowerCase();
+    // 处理 Git 临时文件格式: filename.xlsx(hash)
+    // 移除括号及其内容后再检查扩展名
+    const cleanPath = filePath.replace(/\([^)]+\)$/, '');
+    const ext = path.extname(cleanPath).toLowerCase();
     return this.SUPPORTED_EXTENSIONS.includes(ext);
   }
 

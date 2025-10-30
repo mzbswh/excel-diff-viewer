@@ -72,19 +72,47 @@
       {
         "command": "excel-diff-viewer.compareWithSelected",
         "title": "excel Diff Viewer: 与已选择的文件对比"
+      },
+      {
+        "command": "excel-diff-viewer.compareWithGit",
+        "title": "excel Diff Viewer: 与 Git 版本对比"
+      },
+      {
+        "command": "excel-diff-viewer.compareWithGitHead",
+        "title": "excel Diff Viewer: 与 HEAD 对比"
+      },
+      {
+        "command": "excel-diff-viewer.debugContext",
+        "title": "Excel Diff: Debug Context Info"
       }
     ],
     "menus": {
-      "explorer/context": [
+      "scm/resourceState/context": [
         {
-          "command": "excel-diff-viewer.selectToCompare",
-          "when": "resourceExtname == .xlsx || resourceExtname == .xls || resourceExtname == .csv",
-          "group": "2_workspace@1"
+          "command": "excel-diff-viewer.debugContext",
+          "group": "z_debug"
         },
         {
-          "command": "excel-diff-viewer.compareWithSelected",
-          "when": "resourceExtname == .xlsx || resourceExtname == .xls || resourceExtname == .csv",
-          "group": "2_workspace@2"
+          "command": "excel-diff-viewer.compareWithGit",
+          "group": "navigation"
+        }
+      ],
+      "timeline/item/context": [
+        {
+          "command": "excel-diff-viewer.compareWithGit",
+          "when": "timelineItem =~ /git/ && resourceExtname =~ /\\.(xlsx|xls|csv)$/",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "excel-diff-viewer.debugContext",
+          "group": "z_debug"
+        },
+        {
+          "command": "excel-diff-viewer.compareWithGit",
+          "when": "viewItem =~ /gitlens:file/",
+          "group": "navigation"
         }
       ]
     }

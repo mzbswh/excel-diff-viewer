@@ -7,6 +7,7 @@ import { ExcelReader } from '../utils/excelReader';
 import { Logger } from '../utils/logger';
 import { MessageToExtension, MessageToWebview, ExcelDiffViewerState } from '../shared/message';
 import { SkeletonBuilder } from './skeleton';
+import { GitFileHandler } from '../utils/gitFileHandler';
 
 export interface ExcelDiffProviderArgs {
   extensionContext: vscode.ExtensionContext;
@@ -145,6 +146,187 @@ export class ExcelDiffProvider implements Disposable {
           vscode.window.showErrorMessage(`对比文件失败: ${error}`);
           Logger.error(`Error comparing files: ${error}`, 'Extension');
         }
+      }),
+      vscode.commands.registerCommand('excel-diff-viewer.compareWithGitHead', async (uri: vscode.Uri) => {
+        if (!uri || !uri.fsPath) {
+          vscode.window.showErrorMessage('无法获取文件路径');
+          return;
+        }
+
+        Logger.info(`Compare with Git HEAD: ${uri.fsPath}`, 'Extension');
+
+        try {
+          // 检查是否在 Git 仓库中
+          const isInGit = await GitFileHandler.isInGitRepository(uri);
+          if (!isInGit) {
+            vscode.window.showWarningMessage('文件不在 Git 仓库中');
+            return;
+          }
+
+          // 获取 HEAD 版本
+          const headVersion = await GitFileHandler.getHeadVersion(uri.fsPath);
+          if (!headVersion) {
+            vscode.window.showErrorMessage('无法获取文件的 Git HEAD 版本');
+            return;
+          }
+
+          Logger.info(`HEAD version created: ${headVersion}`, 'Extension');
+
+          // 对比当前文件和 HEAD 版本
+          await this.createOrShow(args.extensionContext, headVersion, uri.fsPath);
+
+        } catch (error) {
+          vscode.window.showErrorMessage(`对比失败: ${error}`);
+          Logger.error(`Error comparing with Git HEAD: ${error}`, 'Extension');
+        }
+      }),
+      vscode.commands.registerCommand('excel-diff-viewer.compareWithGit', async (contextItem: any) => {
+        Logger.info(`Compare with Git command triggered`, 'Extension');
+        Logger.info(`Context type: ${contextItem?.constructor?.name}`, 'Extension');
+        Logger.info(`Context value: ${contextItem?.contextValue}`, 'Extension');
+
+        try {
+          let files: { original: string; modified: string } | null = null;
+
+          // 检测是 GitLens 的 CommitFileNode 还是 SCM 资源
+          if (contextItem?.contextValue?.includes('gitlens:file')) {
+            // GitLens commit file node
+            Logger.info(`Detected GitLens commit file node`, 'Extension');
+            
+            const fileUri = contextItem.uri || contextItem._uri;
+            if (!fileUri) {
+              vscode.window.showErrorMessage('无法获取文件 URI');
+              return;
+            }
+
+            const filePath = fileUri.fsPath;
+            Logger.info(`File path: ${filePath}`, 'Extension');
+
+            // 检查是否是 Excel 文件
+            const excelExtensions = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.csv'];
+            const isExcelFile = excelExtensions.some(ext => filePath.toLowerCase().endsWith(ext));
+            
+            if (!isExcelFile) {
+              Logger.info(`Not an Excel file, skipping: ${filePath}`, 'Extension');
+              return;
+            }
+
+            // 获取 HEAD 版本
+            const headVersion = await GitFileHandler.getHeadVersion(filePath);
+            
+            if (!headVersion) {
+              vscode.window.showErrorMessage('无法获取 Git HEAD 版本');
+              return;
+            }
+
+            files = {
+              original: headVersion,
+              modified: filePath
+            };
+          } else {
+            // 标准 SCM 资源
+            Logger.info(`Detected standard SCM resource`, 'Extension');
+            Logger.info(`Resource group type: ${contextItem?._resourceGroupType}`, 'Extension');
+            Logger.info(`Resource type: ${contextItem?._type}`, 'Extension');
+            
+            // 检查资源组类型，跳过未跟踪的文件
+            const resourceGroupType = contextItem?._resourceGroupType;
+            if (resourceGroupType === 7) {  // 7 通常是 untracked
+              Logger.info(`Skipping untracked file`, 'Extension');
+              return;
+            }
+            
+            files = await GitFileHandler.getFilesFromScmResource(contextItem);
+          }
+          
+          if (!files) {
+            vscode.window.showErrorMessage('无法获取 Git 文件信息');
+            return;
+          }
+
+          Logger.info(`Comparing: ${files.original} vs ${files.modified}`, 'Extension');
+
+          // 对比
+          await this.createOrShow(args.extensionContext, files.original, files.modified);
+
+        } catch (error) {
+          vscode.window.showErrorMessage(`对比失败: ${error}`);
+          Logger.error(`Error comparing with Git: ${error}`, 'Extension');
+        }
+      }),
+      vscode.commands.registerCommand('excel-diff-viewer.debugContext', async (contextItem: any) => {
+        Logger.info(`Debug Context Command Triggered`, 'Extension');
+        
+        // 安全地提取信息，避免循环引用
+        const safeExtract = (obj: any, maxDepth: number = 2, currentDepth: number = 0): any => {
+          if (currentDepth >= maxDepth || !obj || typeof obj !== 'object') {
+            return String(obj);
+          }
+          
+          const result: any = {};
+          try {
+            for (const key of Object.keys(obj)) {
+              try {
+                const value = obj[key];
+                if (value === null || value === undefined) {
+                  result[key] = String(value);
+                } else if (typeof value === 'function') {
+                  result[key] = '[Function]';
+                } else if (typeof value === 'object') {
+                  if (value.constructor?.name) {
+                    result[key] = `[${value.constructor.name}]`;
+                  } else {
+                    result[key] = '[Object]';
+                  }
+                } else {
+                  result[key] = value;
+                }
+              } catch (e) {
+                result[key] = '[Error reading property]';
+              }
+            }
+          } catch (e) {
+            return '[Error extracting object]';
+          }
+          return result;
+        };
+        
+        // 提取关键信息
+        const debugInfo = {
+          hasContextItem: !!contextItem,
+          constructor: contextItem?.constructor?.name,
+          contextValue: contextItem?.contextValue,
+          viewItem: contextItem?.viewItem,
+          resourceUri: contextItem?.resourceUri?.toString(),
+          uri: contextItem?.uri?.toString(),
+          label: contextItem?.label,
+          description: contextItem?.description,
+          tooltip: contextItem?.tooltip,
+          scheme: contextItem?.resourceUri?.scheme || contextItem?.uri?.scheme,
+          path: contextItem?.resourceUri?.path || contextItem?.uri?.path,
+          fsPath: contextItem?.resourceUri?.fsPath || contextItem?.uri?.fsPath,
+          keys: contextItem ? Object.keys(contextItem).join(', ') : 'N/A',
+          topLevelProperties: safeExtract(contextItem, 1)
+        };
+        
+        Logger.info(`Context Debug Info:`, 'Extension');
+        Logger.info(`  Constructor: ${debugInfo.constructor}`, 'Extension');
+        Logger.info(`  contextValue: ${debugInfo.contextValue}`, 'Extension');
+        Logger.info(`  viewItem: ${debugInfo.viewItem}`, 'Extension');
+        Logger.info(`  resourceUri: ${debugInfo.resourceUri}`, 'Extension');
+        Logger.info(`  uri: ${debugInfo.uri}`, 'Extension');
+        Logger.info(`  scheme: ${debugInfo.scheme}`, 'Extension');
+        Logger.info(`  path: ${debugInfo.path}`, 'Extension');
+        Logger.info(`  fsPath: ${debugInfo.fsPath}`, 'Extension');
+        Logger.info(`  label: ${debugInfo.label}`, 'Extension');
+        Logger.info(`  Available keys: ${debugInfo.keys}`, 'Extension');
+        
+        vscode.window.showInformationMessage(
+          `Context Debug Info:\n` +
+          `contextValue: ${debugInfo.contextValue || 'undefined'}\n` +
+          `resourceUri: ${debugInfo.resourceUri || 'undefined'}\n` +
+          `Check Output panel for full details`
+        );
       })
     ];
   }
