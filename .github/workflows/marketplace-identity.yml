@@ -1,0 +1,46 @@
+name: Resolve Marketplace identity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  resolve-identity:
+    name: Resolve service principal profile ID
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Sign in to Microsoft Entra with GitHub OIDC
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Resolve Marketplace profile ID
+        shell: bash
+        run: |
+          profile_id="$(az rest \
+            --method GET \
+            --uri "https://app.vssps.visualstudio.com/_apis/profile/profiles/me" \
+            --resource "499b84ac-1321-427f-aa17-267ca6975798" \
+            --query id \
+            --output tsv)"
+
+          if [[ -z "${profile_id}" ]]; then
+            echo "Marketplace profile ID was not returned." >&2
+            exit 1
+          fi
+
+          {
+            echo "## Marketplace service principal profile ID"
+            echo
+            echo "\`${profile_id}\`"
+            echo
+            echo "Add this ID to the mzbswh Marketplace publisher as a Contributor."
+          } >> "${GITHUB_STEP_SUMMARY}"
