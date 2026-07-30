@@ -205,7 +205,6 @@ jobs:
       - build-release
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: vscode-marketplace
     permissions:
       contents: read
       id-token: write
@@ -237,12 +236,12 @@ jobs:
           cd release
           sha256sum --check SHA256SUMS
 
-      - name: Sign in to Azure with GitHub OIDC
+      - name: Sign in to Microsoft Entra with GitHub OIDC
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
 
       - name: Publish to Visual Studio Marketplace
         env:

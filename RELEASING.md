@@ -4,32 +4,42 @@
 
 1. Create or verify the `mzbswh` publisher in Visual Studio Marketplace.
 2. Confirm that the Marketplace publisher ID matches `package.json#publisher`.
-3. Create a user-assigned managed identity for Marketplace publishing and grant it the minimal Azure subscription access required for OIDC login (Reader is sufficient for the documented setup).
-4. Create the `vscode-marketplace` GitHub Environment and restrict its deployment branches to `main` only. Requiring approval for this environment is recommended for production publishing.
-5. Add a GitHub Actions federated credential scoped to the `vscode-marketplace` environment in this repository.
-6. Add the managed identity to the `mzbswh` Visual Studio Marketplace publisher and grant it the Contributor role.
-7. Store `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` as GitHub environment secrets.
+3. Register a single-tenant application in Microsoft Entra ID. A client secret, certificate, and Azure subscription are not required.
+4. Enable immutable GitHub Actions OIDC subjects for this repository.
+5. Add a federated credential to the application for the `main` branch of this repository.
+6. Resolve the service principal's Marketplace profile ID and add it to the `mzbswh` publisher with the Contributor role.
+7. Store `AZURE_CLIENT_ID` and `AZURE_TENANT_ID` as GitHub repository secrets.
 8. Protect the `main` branch and require the CI workflow before merging when appropriate.
 
-The release workflow uses Microsoft Entra workload identity federation and `vsce publish --azure-credential`. It does not use a Personal Access Token or Azure client secret.
+The release workflow uses Microsoft Entra workload identity federation and `vsce publish --azure-credential`. It does not use an Azure subscription, Personal Access Token, Azure client secret, or GitHub Environment.
 
 ## Microsoft Entra configuration
 
 The federated credential must match the release job exactly:
 
 - GitHub organization or owner: `mzbswh`
+- GitHub organization or owner ID: `58725946`
 - Repository: `excel-diff-viewer`
-- Entity type: Environment
-- Environment name: `vscode-marketplace`
+- Repository ID: `1072639702`
+- Entity type: Branch
+- Branch: `main`
+- Issuer: `https://token.actions.githubusercontent.com`
+- Audience: `api://AzureADTokenExchange`
 
-For repositories using GitHub's classic OIDC subject format, this environment produces `repo:mzbswh/excel-diff-viewer:environment:vscode-marketplace`. If immutable OIDC subject claims are enabled for the repository, use the exact subject containing the owner and repository IDs when creating the Azure federated credential.
+The repository uses GitHub's immutable OIDC subject format. The exact subject is:
 
-The workflow also checks `github.ref` so manual dispatches from any branch other than `main` cannot build or publish. Keep the Environment deployment-branch restriction as a second, independently configured guard.
+```text
+repo:mzbswh@58725946/excel-diff-viewer@1072639702:ref:refs/heads/main
+```
+
+The workflow omits `subscription-id` and sets `allow-no-subscriptions: true`, so `azure/login` establishes a tenant-level service-principal session. `AZURE_CLIENT_ID` is the application ID and `AZURE_TENANT_ID` is the directory ID.
+
+The workflow also checks `github.ref` so manual dispatches from branches other than `main` cannot build or publish. Because the federated credential trusts the `main` branch rather than a specific workflow file, protect `main` from unreviewed workflow changes.
 
 The workflow separates packaging, Marketplace publishing, and GitHub Release creation into different jobs:
 
 - `build-release` only receives `contents: read` and creates the VSIX, release notes, and SHA-256 checksum.
-- `publish-marketplace` receives `id-token: write` but not repository write access. Dependency lifecycle scripts are disabled when installing the pinned publishing toolchain.
+- `publish-marketplace` receives `id-token: write` but not repository write access. It signs in without an Azure subscription, and dependency lifecycle scripts are disabled when installing the pinned publishing toolchain.
 - `publish-github` receives `contents: write` but no OIDC permission.
 
 All reusable GitHub Actions are pinned to immutable full commit SHAs. Checkout credentials are not persisted into either workspace.
