@@ -1,0 +1,212 @@
+{
+  "name": "excel-diff-viewer",
+  "displayName": "Excel Diff Viewer",
+  "description": "A modern side-by-side Excel workbook diff viewer for VS Code, GitLens and Explorer.",
+  "version": "1.0.0",
+  "publisher": "mzbswh",
+  "author": {
+    "name": "mzbswh"
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzbswh/excel-diff-viewer.git"
+  },
+  "homepage": "https://github.com/mzbswh/excel-diff-viewer#readme",
+  "bugs": {
+    "url": "https://github.com/mzbswh/excel-diff-viewer/issues"
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#10251a",
+    "theme": "dark"
+  },
+  "pricing": "Free",
+  "preview": false,
+  "markdown": "github",
+  "qna": "https://github.com/mzbswh/excel-diff-viewer/issues",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "excel",
+    "xlsx",
+    "spreadsheet",
+    "diff",
+    "compare",
+    "git",
+    "scm",
+    "gitlens"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "node esbuild.mjs --production",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit",
+    "package": "vsce package --no-yarn --no-dependencies",
+    "package:list": "vsce ls --tree --no-yarn --no-dependencies",
+    "publish:marketplace": "vsce publish --no-yarn --no-dependencies --skip-duplicate",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.5.4"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "excelDiffViewer.openCompare",
+        "title": "Excel Diff: Compare Two Files",
+        "category": "Excel Diff"
+      },
+      {
+        "command": "excelDiffViewer.selectForCompare",
+        "title": "Select for Compare",
+        "category": "Excel Diff",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "excelDiffViewer.compareWithSelected",
+        "title": "Compare with Selected",
+        "category": "Excel Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "excelDiffViewer.clearSelected",
+        "title": "Clear Selected File",
+        "category": "Excel Diff"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "excelDiffViewer.selectForCompare",
+          "when": "resourceExtname =~ /\\.(xlsx|xlsm|xlsb|xls)$/i",
+          "group": "navigation@80"
+        },
+        {
+          "command": "excelDiffViewer.compareWithSelected",
+          "when": "resourceExtname =~ /\\.(xlsx|xlsm|xlsb|xls)$/i && excelDiffViewer.hasSelectedFile",
+          "group": "navigation@81"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "excelDiffViewer.clearSelected",
+          "when": "excelDiffViewer.hasSelectedFile"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Excel Diff Viewer",
+      "properties": {
+        "excelDiffViewer.theme": {
+          "type": "string",
+          "enum": [
+            "dark",
+            "light"
+          ],
+          "enumDescriptions": [
+            "Use the dark Excel Diff color theme.",
+            "Use the light Excel Diff color theme."
+          ],
+          "default": "dark",
+          "description": "Color theme used by Excel Diff Viewer."
+        },
+        "excelDiffViewer.diffMode": {
+          "type": "string",
+          "enum": [
+            "sideBySide",
+            "unified"
+          ],
+          "enumDescriptions": [
+            "Show before and after worksheets next to each other.",
+            "Show before and after values in one unified worksheet."
+          ],
+          "default": "sideBySide",
+          "description": "Default Excel diff display mode."
+        },
+        "excelDiffViewer.navigationUnit": {
+          "type": "string",
+          "enum": [
+            "cell",
+            "row"
+          ],
+          "enumDescriptions": [
+            "Jump through every changed cell.",
+            "Jump once per changed row."
+          ],
+          "default": "cell",
+          "description": "Unit used by previous and next change navigation."
+        },
+        "excelDiffViewer.rowFilter": {
+          "type": "string",
+          "enum": [
+            "all",
+            "changed",
+            "added",
+            "removed"
+          ],
+          "enumDescriptions": [
+            "Show all worksheet rows.",
+            "Show every row containing a difference.",
+            "Show rows containing only added cells.",
+            "Show rows containing only removed cells."
+          ],
+          "default": "all",
+          "description": "Last selected row filter in Excel Diff Viewer."
+        },
+        "excelDiffViewer.autoOpenScmDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically replace Excel diff tabs opened by GitLens, Git, or another SCM extension with Excel Diff Viewer."
+        },
+        "excelDiffViewer.pageSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 50,
+          "maximum": 1000,
+          "description": "Number of worksheet rows rendered per page."
+        },
+        "excelDiffViewer.ignoreWhitespace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ignore leading, trailing, and repeated whitespace when comparing text cells."
+        },
+        "excelDiffViewer.showUnchangedSheets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show unchanged worksheets in the sheet navigator."
+        }
+      }
+    }
+  },
+  "files": [
+    "dist/extension.js",
+    "images/**",
+    "media/**",
+    "package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "PRIVACY.md",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses/**"
+  ]
+}

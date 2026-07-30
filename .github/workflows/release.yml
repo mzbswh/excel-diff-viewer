@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - v1.0
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: excel-diff-viewer-release
+  cancel-in-progress: false
+
+jobs:
+  detect-version:
+    name: Detect version change
+    runs-on: ubuntu-latest
+    outputs:
+      should-release: ${{ steps.version.outputs.should-release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Check out repository and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          lock_version="$(node -p "require('./package-lock.json').version")"
+
+          node -e '
+            const version = process.argv[1];
+            if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+              throw new Error(`Release version must use stable SemVer x.y.z: ${version}`);
+            }
+          ' "${version}"
+
+          if [[ "${version}" != "${lock_version}" ]]; then
+            echo "package.json (${version}) and package-lock.json (${lock_version}) do not match." >&2
+            exit 1
+          fi
+
+          if ! grep -Eq "^## ${version}([[:space:]-]|$)" CHANGELOG.md; then
+            echo "CHANGELOG.md does not contain a ${version} section." >&2
+            exit 1
+          fi
+
+          previous_version=""
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ "${EVENT_NAME}" == "push" && -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "${zero_sha}" ]]; then
+            if git cat-file -e "${BEFORE_SHA}:package.json" 2>/dev/null; then
+              previous_version="$(git show "${BEFORE_SHA}:package.json" | node -e '
+                let input = "";
+                process.stdin.on("data", chunk => input += chunk);
+                process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version ?? ""));
+              ')"
+            fi
+          fi
+
+          if [[ -n "${previous_version}" && "${previous_version}" != "${version}" ]]; then
+            node -e '
+              const previous = process.argv[1].split(".").map(Number);
+              const current = process.argv[2].split(".").map(Number);
+              const increased = current.some((value, index) =>
+                value > previous[index] && current.slice(0, index).every((part, partIndex) => part === previous[partIndex])
+              );
+              if (!increased) {
+                throw new Error(`Version must increase: ${process.argv[1]} -> ${process.argv[2]}`);
+              }
+            ' "${previous_version}" "${version}"
+          fi
+
+          tag="v${version}"
+          should_release=false
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${previous_version}" != "${version}" ]]; then
+            if ! git rev-parse --quiet --verify "refs/tags/${tag}" >/dev/null; then
+              should_release=true
+            fi
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "should-release=${should_release}" >> "${GITHUB_OUTPUT}"
+          echo "Current version: ${version}; previous version: ${previous_version:-none}; release: ${should_release}"
+
+  publish:
+    name: Publish ${{ needs.detect-version.outputs.tag }}
+    needs: detect-version
+    if: needs.detect-version.outputs.should-release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: vscode-marketplace
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check extension
+        run: npm run check
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package VSIX
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          mkdir -p release
+          vsix="release/excel-diff-viewer-${VERSION}.vsix"
+          npm run package -- --out "${vsix}"
+          npm run package:list
+          unzip -t "${vsix}"
+          echo "vsix=${vsix}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.detect-version.outputs.tag }}
+          path: ${{ steps.package.outputs.vsix }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to Visual Studio Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX: ${{ steps.package.outputs.vsix }}
+        shell: bash
+        run: |
+          if [[ -z "${VSCE_PAT}" ]]; then
+            echo "The VSCE_PAT repository secret is not configured." >&2
+            exit 1
+          fi
+          npm run publish:marketplace -- --packagePath "${VSIX}"
+
+      - name: Create GitHub Release and upload VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.detect-version.outputs.tag }}
+          VSIX: ${{ steps.package.outputs.vsix }}
+        shell: bash
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${VSIX}" --clobber
+          else
+            gh release create "${TAG}" "${VSIX}" \
+              --target "${GITHUB_SHA}" \
+              --title "${TAG}" \
+              --generate-notes
+          fi
