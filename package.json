@@ -2,7 +2,7 @@
   "name": "excel-diff-viewer",
   "displayName": "Excel Diff Viewer",
   "description": "A modern side-by-side Excel workbook diff viewer for VS Code, GitLens and Explorer.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "mzbswh",
   "author": {
     "name": "mzbswh"
@@ -26,7 +26,7 @@
   "markdown": "github",
   "qna": "https://github.com/mzbswh/excel-diff-viewer/issues",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.120.0"
   },
   "categories": [
     "Other",
@@ -67,6 +67,14 @@
     "typescript": "^5.5.4"
   },
   "contributes": {
+    "configurationDefaults": {
+      "workbench.diffEditorAssociations": {
+        "*.xlsx": "default",
+        "*.xlsm": "default",
+        "*.xlsb": "default",
+        "*.xls": "default"
+      }
+    },
     "commands": [
       {
         "command": "excelDiffViewer.openCompare",

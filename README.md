@@ -32,14 +32,16 @@ You can also install it from the Command Palette with **Extensions: Install Exte
 Download the `.vsix` file from the matching [GitHub Release](https://github.com/mzbswh/excel-diff-viewer/releases), then run:
 
 ```bash
-code --install-extension excel-diff-viewer-1.0.0.vsix
+code --install-extension excel-diff-viewer-1.0.1.vsix
 ```
 
 ## Usage
 
 ### Compare a Git or SCM change
 
-Open an Excel change from the Source Control view, GitLens, or another extension that opens a standard VS Code text diff. When both sides resolve to supported Excel workbooks, Excel Diff Viewer opens its workbook-aware view and closes the original binary diff tab.
+Open an Excel change from the Source Control view, GitLens, or another extension that opens a standard VS Code text diff. When both sides resolve to supported Excel workbooks, Excel Diff Viewer captures both URIs, immediately closes the original binary diff tab, and opens its workbook-aware view.
+
+When automatic takeover is enabled, Excel Diff Viewer adds explicit Excel entries to the profile's `workbench.diffEditorAssociations`. This makes Excel diff tabs use VS Code's default diff editor before takeover, even when another extension is configured as the normal editor for Excel files. Existing explicit Excel diff associations are preserved. Regular workbook tabs continue to use the viewer selected in `workbench.editorAssociations`.
 
 Automatic takeover can be disabled with `excelDiffViewer.autoOpenScmDiff`.
 
@@ -74,7 +76,7 @@ Excel Diff Viewer is read-only. It does not modify either workbook.
 
 ## Requirements
 
-- Visual Studio Code 1.90.0 or later.
+- Visual Studio Code 1.120.0 or later.
 - An SCM integration that opens a standard `TabInputTextDiff` when automatic takeover is used.
 
 The extension runs on macOS, Windows, and Linux wherever the selected workbook URIs can be read by the VS Code file system provider.

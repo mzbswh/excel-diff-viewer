@@ -4,9 +4,12 @@ import { WorkbookComparison } from './model';
 import { ExcelDiffPanel } from './panel';
 
 const selectedUriKey = 'excelDiffViewer.selectedUri';
-const recentAutoDiffs = new Map<string, number>();
+const excelDiffPatterns = ['*.xlsx', '*.xlsm', '*.xlsb', '*.xls'] as const;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  await ensureExcelDiffAssociations();
+  const interceptedAutoDiffTabs = new WeakSet<vscode.Tab>();
+
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 30);
   status.command = 'excelDiffViewer.clearSelected';
   context.subscriptions.push(status);
@@ -107,31 +110,30 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!isExcelUri(input.original) || !isExcelUri(input.modified)) {
       return;
     }
-
-    const key = `${input.original.toString()}\u0000${input.modified.toString()}`;
-    const now = Date.now();
-    const previous = recentAutoDiffs.get(key) ?? 0;
-    if (now - previous < 5000) {
+    if (interceptedAutoDiffTabs.has(tab)) {
       return;
     }
-    recentAutoDiffs.set(key, now);
-    for (const [entry, time] of recentAutoDiffs) {
-      if (now - time > 30_000) {
-        recentAutoDiffs.delete(entry);
-      }
-    }
+    interceptedAutoDiffTabs.add(tab);
 
-    void openComparison(context, input.original, input.modified, false).then(async (opened) => {
-      if (opened) {
-        await vscode.window.tabGroups.close(tab, true);
-      }
-    });
+    const closeOriginalDiff = vscode.window.tabGroups.close(tab, true);
+    void Promise.allSettled([
+      closeOriginalDiff,
+      openComparison(context, input.original, input.modified, false)
+    ]);
   };
 
   context.subscriptions.push(
     vscode.window.tabGroups.onDidChangeTabs((event) => {
       for (const tab of event.opened) {
         inspectTab(tab);
+      }
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration('excelDiffViewer.autoOpenScmDiff')
+        && vscode.workspace.getConfiguration('excelDiffViewer').get<boolean>('autoOpenScmDiff', true)
+      ) {
+        void ensureExcelDiffAssociations();
       }
     })
   );
@@ -143,8 +145,40 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 }
 
-export function deactivate(): void {
-  recentAutoDiffs.clear();
+export function deactivate(): void {}
+
+async function ensureExcelDiffAssociations(): Promise<void> {
+  if (!vscode.workspace.getConfiguration('excelDiffViewer').get<boolean>('autoOpenScmDiff', true)) {
+    return;
+  }
+
+  const workbenchConfiguration = vscode.workspace.getConfiguration('workbench');
+  const inspected = workbenchConfiguration.inspect<Record<string, string>>('diffEditorAssociations');
+  const globalAssociations = { ...(inspected?.globalValue ?? {}) };
+  let changed = false;
+
+  for (const pattern of excelDiffPatterns) {
+    const explicitlyConfigured = inspected?.workspaceFolderValue?.[pattern]
+      ?? inspected?.workspaceValue?.[pattern]
+      ?? inspected?.globalValue?.[pattern];
+    if (explicitlyConfigured === undefined) {
+      globalAssociations[pattern] = 'default';
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return;
+  }
+
+  await workbenchConfiguration.update(
+    'diffEditorAssociations',
+    globalAssociations,
+    vscode.ConfigurationTarget.Global
+  );
+  void vscode.window.showInformationMessage(
+    'Excel Diff Viewer configured Excel SCM diffs. Reopen any Excel diff tabs that are already open.'
+  );
 }
 
 async function openComparison(

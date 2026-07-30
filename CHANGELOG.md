@@ -2,6 +2,11 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.0.1 - 2026-07-30
+
+- Fixed Excel SCM diffs intermittently opening in another installed Excel viewer instead of Excel Diff Viewer.
+- Added explicit Excel diff associations, removed URI-based time throttling, and closed the native binary diff before VS Code's custom-editor fallback runs.
+
 ## 1.0.0 - 2026-07-30
 
 - Initial public release.

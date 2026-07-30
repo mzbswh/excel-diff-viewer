@@ -61,7 +61,7 @@ Automatic push runs use the Git tag as an idempotency lock. A rerun of the origi
 npm ci
 npm run check
 npm run build
-npm run package -- --out excel-diff-viewer-1.0.0.vsix
+npm run package -- --out excel-diff-viewer-1.0.1.vsix
 npm run package:list
 ```
 
