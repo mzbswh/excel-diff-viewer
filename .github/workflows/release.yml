@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - v1.0
     paths:
       - package.json
   workflow_dispatch:
@@ -19,6 +18,7 @@ concurrency:
 jobs:
   detect-version:
     name: Detect version change
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       should-release: ${{ steps.version.outputs.should-release }}
@@ -27,9 +27,10 @@ jobs:
 
     steps:
       - name: Check out repository and tags
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release version
         id: version
@@ -37,6 +38,7 @@ jobs:
         env:
           BEFORE_SHA: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           version="$(node -p "require('./package.json').version")"
           lock_version="$(node -p "require('./package-lock.json').version")"
@@ -53,7 +55,8 @@ jobs:
             exit 1
           fi
 
-          if ! grep -Eq "^## ${version}([[:space:]-]|$)" CHANGELOG.md; then
+          escaped_version="${version//./\\.}"
+          if ! grep -Eq "^## ${escaped_version}([[:space:]-]|$)" CHANGELOG.md; then
             echo "CHANGELOG.md does not contain a ${version} section." >&2
             exit 1
           fi
@@ -84,11 +87,25 @@ jobs:
           fi
 
           tag="v${version}"
+          tag_exists=false
+          tag_commit=""
+          if git rev-parse --quiet --verify "refs/tags/${tag}" >/dev/null; then
+            tag_exists=true
+            tag_commit="$(git rev-list -n 1 "refs/tags/${tag}")"
+          fi
+
           should_release=false
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${previous_version}" != "${version}" ]]; then
-            if ! git rev-parse --quiet --verify "refs/tags/${tag}" >/dev/null; then
-              should_release=true
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" || "${RUN_ATTEMPT}" -gt 1 ]]; then
+            # Manual dispatches and reruns are recovery runs too. The publishing
+            # commands below are idempotent even when the release already exists.
+            if [[ "${tag_exists}" == "true" && "${tag_commit}" != "${GITHUB_SHA}" ]]; then
+              echo "${tag} points to ${tag_commit}, not this workflow commit ${GITHUB_SHA}." >&2
+              echo "Refusing to replace release assets with a build from different source." >&2
+              exit 1
             fi
+            should_release=true
+          elif [[ "${previous_version}" != "${version}" && "${tag_exists}" == "false" ]]; then
+            should_release=true
           fi
 
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
@@ -96,22 +113,23 @@ jobs:
           echo "should-release=${should_release}" >> "${GITHUB_OUTPUT}"
           echo "Current version: ${version}; previous version: ${previous_version:-none}; release: ${should_release}"
 
-  publish:
-    name: Publish ${{ needs.detect-version.outputs.tag }}
+  build-release:
+    name: Build ${{ needs.detect-version.outputs.tag }}
     needs: detect-version
     if: needs.detect-version.outputs.should-release == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: vscode-marketplace
+    timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Check out release commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: npm
@@ -136,40 +154,149 @@ jobs:
           npm run package -- --out "${vsix}"
           npm run package:list
           unzip -t "${vsix}"
+          (
+            cd release
+            sha256sum "$(basename "${vsix}")" > SHA256SUMS
+          )
           echo "vsix=${vsix}" >> "${GITHUB_OUTPUT}"
 
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        run: |
+          notes="release/release-notes.md"
+          node -e '
+            const fs = require("node:fs");
+            const version = process.argv[1];
+            const output = process.argv[2];
+            const lines = fs.readFileSync("CHANGELOG.md", "utf8").split(/\r?\n/);
+            const heading = new RegExp(`^## ${version.replace(/\./g, "\\.")}(?:\\s|$)`);
+            const start = lines.findIndex(line => heading.test(line));
+            if (start < 0) {
+              throw new Error(`CHANGELOG.md does not contain a ${version} section.`);
+            }
+            const endOffset = lines.slice(start + 1).findIndex(line => /^##\s+/.test(line));
+            const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+            const notes = lines.slice(start + 1, end).join("\n").trim();
+            if (!notes) {
+              throw new Error(`CHANGELOG.md section ${version} is empty.`);
+            }
+            fs.writeFileSync(output, `${notes}\n`);
+          ' "${VERSION}" "${notes}"
+          echo "path=${notes}" >> "${GITHUB_OUTPUT}"
+
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ needs.detect-version.outputs.tag }}
-          path: ${{ steps.package.outputs.vsix }}
+          path: |
+            ${{ steps.package.outputs.vsix }}
+            release/release-notes.md
+            release/SHA256SUMS
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish to Visual Studio Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-          VSIX: ${{ steps.package.outputs.vsix }}
+  publish-marketplace:
+    name: Publish ${{ needs.detect-version.outputs.tag }} to Marketplace
+    needs:
+      - detect-version
+      - build-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out publishing tools
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install publishing tools without lifecycle scripts
+        run: npm ci --ignore-scripts --omit=optional
+
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.detect-version.outputs.tag }}
+          path: release
+
+      - name: Verify release artifact
         shell: bash
         run: |
-          if [[ -z "${VSCE_PAT}" ]]; then
-            echo "The VSCE_PAT repository secret is not configured." >&2
-            exit 1
-          fi
-          npm run publish:marketplace -- --packagePath "${VSIX}"
+          cd release
+          sha256sum --check SHA256SUMS
+
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Publish to Visual Studio Marketplace
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+        shell: bash
+        run: |
+          ./node_modules/.bin/vsce publish \
+            --no-yarn \
+            --no-dependencies \
+            --skip-duplicate \
+            --packagePath "release/excel-diff-viewer-${VERSION}.vsix" \
+            --azure-credential
+
+  publish-github:
+    name: Publish ${{ needs.detect-version.outputs.tag }} to GitHub
+    needs:
+      - detect-version
+      - build-release
+      - publish-marketplace
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.detect-version.outputs.tag }}
+          path: release
+
+      - name: Verify release artifact
+        shell: bash
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS
 
       - name: Create GitHub Release and upload VSIX
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.detect-version.outputs.tag }}
-          VSIX: ${{ steps.package.outputs.vsix }}
+          VERSION: ${{ needs.detect-version.outputs.version }}
         shell: bash
         run: |
+          vsix="release/excel-diff-viewer-${VERSION}.vsix"
+          notes="release/release-notes.md"
+          checksums="release/SHA256SUMS"
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${VSIX}" --clobber
+            gh release edit "${TAG}" --title "${TAG}" --notes-file "${notes}"
+            gh release upload "${TAG}" "${vsix}" "${checksums}" --clobber
           else
-            gh release create "${TAG}" "${VSIX}" \
+            gh release create "${TAG}" "${vsix}" "${checksums}" \
               --target "${GITHUB_SHA}" \
               --title "${TAG}" \
-              --generate-notes
+              --notes-file "${notes}"
           fi
