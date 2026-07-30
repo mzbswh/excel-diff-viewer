@@ -76,7 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
       async (resource?: vscode.Uri, selectedResources?: vscode.Uri[]) => {
         const left = restoreSelected();
         if (!left) {
-          await vscode.window.showWarningMessage('Select an Excel file with “Select for Compare” first.');
+          await vscode.window.showWarningMessage('Select an Excel file with “Excel Diff Viewer: Select for Compare” first.');
           return;
         }
         const right = await resolveExcelResource(resource, selectedResources, 'Compare with selected file');

@@ -45,13 +45,13 @@ Automatic takeover can be disabled with `excelDiffViewer.autoOpenScmDiff`.
 
 ### Compare two files
 
-Run **Excel Diff: Compare Two Files** from the Command Palette and choose exactly two supported workbooks.
+Run **Excel Diff Viewer: Compare Two Files** from the Command Palette and choose exactly two supported workbooks.
 
 ### Compare from the Explorer
 
-1. Right-click the first workbook and select **Select for Compare**.
-2. Right-click a different workbook and select **Compare with Selected**.
-3. Use **Excel Diff: Clear Selected File** to clear the saved selection.
+1. Right-click the first workbook and select **Excel Diff Viewer: Select for Compare**.
+2. Right-click a different workbook and select **Excel Diff Viewer: Compare with Selected**.
+3. Use **Excel Diff Viewer: Clear Selected File** to clear the saved selection.
 
 ## Comparison behavior
 

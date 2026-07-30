@@ -70,25 +70,21 @@
     "commands": [
       {
         "command": "excelDiffViewer.openCompare",
-        "title": "Excel Diff: Compare Two Files",
-        "category": "Excel Diff"
+        "title": "Excel Diff Viewer: Compare Two Files"
       },
       {
         "command": "excelDiffViewer.selectForCompare",
-        "title": "Select for Compare",
-        "category": "Excel Diff",
+        "title": "Excel Diff Viewer: Select for Compare",
         "icon": "$(pin)"
       },
       {
         "command": "excelDiffViewer.compareWithSelected",
-        "title": "Compare with Selected",
-        "category": "Excel Diff",
+        "title": "Excel Diff Viewer: Compare with Selected",
         "icon": "$(diff)"
       },
       {
         "command": "excelDiffViewer.clearSelected",
-        "title": "Clear Selected File",
-        "category": "Excel Diff"
+        "title": "Excel Diff Viewer: Clear Selected File"
       }
     ],
     "menus": {
