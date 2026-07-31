@@ -61,8 +61,8 @@ Automatic push runs use the Git tag as an idempotency lock. A rerun of the origi
 npm ci
 npm run check
 npm run build
-npm run package -- --out excel-diff-viewer-1.0.1.vsix
+npm run package -- --out excel-diff-viewer-1.0.2.vsix
 npm run package:list
 ```
 
-Install the generated VSIX in a clean Visual Studio Code profile and verify manual comparison plus built-in Git and GitLens diff takeover before the first public release.
+Install the generated VSIX in a clean Visual Studio Code profile and verify manual comparison plus Source Control diff takeover before release.

@@ -6,7 +6,7 @@ For a bug report, include:
 
 - the Excel Diff Viewer version;
 - the Visual Studio Code version and operating system;
-- whether the comparison came from built-in Git, GitLens, another SCM extension, the Explorer, or the file picker;
+- whether the comparison came from Source Control, the Explorer, or the file picker;
 - the workbook format (`.xlsx`, `.xlsm`, `.xlsb`, or `.xls`);
 - the exact error message and the steps required to reproduce it; and
 - a minimal sanitized workbook when it can be shared safely.

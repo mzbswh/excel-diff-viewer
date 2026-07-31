@@ -2,7 +2,7 @@
 
 Compare Excel workbooks directly in Visual Studio Code with a spreadsheet-aware side-by-side diff.
 
-Excel Diff Viewer reads workbook versions exposed by built-in Git, GitLens, compatible SCM extensions, the Explorer, or the file picker. It compares worksheets and cells without converting the workbook to text.
+Excel Diff Viewer reads workbook versions exposed by Visual Studio Code Source Control, the Explorer, or the file picker. It compares worksheets and cells without converting the workbook to text.
 
 ## Features
 
@@ -32,16 +32,16 @@ You can also install it from the Command Palette with **Extensions: Install Exte
 Download the `.vsix` file from the matching [GitHub Release](https://github.com/mzbswh/excel-diff-viewer/releases), then run:
 
 ```bash
-code --install-extension excel-diff-viewer-1.0.1.vsix
+code --install-extension excel-diff-viewer-1.0.2.vsix
 ```
 
 ## Usage
 
 ### Compare a Git or SCM change
 
-Open an Excel change from the Source Control view, GitLens, or another extension that opens a standard VS Code text diff. When both sides resolve to supported Excel workbooks, Excel Diff Viewer captures both URIs, immediately closes the original binary diff tab, and opens its workbook-aware view.
+Open an Excel change from the Source Control view. When both sides resolve to supported Excel workbooks, Excel Diff Viewer captures both URIs, immediately closes the original binary diff tab, and opens its workbook-aware view.
 
-When automatic takeover is enabled, Excel Diff Viewer adds explicit Excel entries to the profile's `workbench.diffEditorAssociations`. This makes Excel diff tabs use VS Code's default diff editor before takeover, even when another extension is configured as the normal editor for Excel files. Existing explicit Excel diff associations are preserved. Regular workbook tabs continue to use the viewer selected in `workbench.editorAssociations`.
+When automatic takeover is enabled, Excel Diff Viewer adds explicit Excel entries to the profile's `workbench.diffEditorAssociations`. This makes Excel diff tabs use VS Code's default diff editor before takeover. Existing explicit Excel diff associations are preserved. Regular workbook tabs continue to use the viewer selected in `workbench.editorAssociations`.
 
 Automatic takeover can be disabled with `excelDiffViewer.autoOpenScmDiff`.
 
@@ -86,7 +86,7 @@ The extension runs on macOS, Windows, and Linux wherever the selected workbook U
 - Formatting-only changes, charts, images, pivot tables, and VBA content are not compared.
 - Rows and columns are not structurally aligned after insertions; comparison remains address-based.
 - Password-protected or unsupported workbook content may fail to parse.
-- Automatic takeover does not apply when another extension uses a nonstandard or custom diff editor.
+- Automatic takeover requires a standard Visual Studio Code text diff tab.
 - Very large workbooks are parsed in full before pages are rendered.
 
 ## Privacy

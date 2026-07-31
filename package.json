@@ -1,8 +1,8 @@
 {
   "name": "excel-diff-viewer",
   "displayName": "Excel Diff Viewer",
-  "description": "A modern side-by-side Excel workbook diff viewer for VS Code, GitLens and Explorer.",
-  "version": "1.0.1",
+  "description": "A modern side-by-side Excel workbook diff viewer for Visual Studio Code.",
+  "version": "1.0.2",
   "publisher": "mzbswh",
   "author": {
     "name": "mzbswh"
@@ -39,8 +39,7 @@
     "diff",
     "compare",
     "git",
-    "scm",
-    "gitlens"
+    "scm"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -177,7 +176,7 @@
         "excelDiffViewer.autoOpenScmDiff": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically replace Excel diff tabs opened by GitLens, Git, or another SCM extension with Excel Diff Viewer."
+          "description": "Automatically replace compatible Excel Source Control diff tabs with Excel Diff Viewer."
         },
         "excelDiffViewer.pageSize": {
           "type": "number",
