@@ -269,7 +269,7 @@ export class ExcelDiffPanel {
             <span id="page-label">Page 1 of 1</span>
             <button id="next-page" class="page-button page-arrow" title="Next page">›</button>
           </div>
-          <div id="cell-inspector" class="cell-inspector">Select a cell to inspect its value and formula</div>
+          <div id="cell-inspector" class="cell-inspector" tabindex="0">Select a cell to inspect its value and formula</div>
           <div class="change-navigation" aria-label="Changed cell navigation">
             <button id="previous-change" class="change-button" title="Previous changed cell">←</button>
             <select id="navigation-unit-select" aria-label="Change navigation unit">
@@ -281,6 +281,28 @@ export class ExcelDiffPanel {
         </footer>
       </main>
     </div>
+    <dialog id="cell-comparison-dialog" class="cell-comparison-dialog" aria-labelledby="cell-comparison-address">
+      <div class="cell-comparison-dialog-card">
+        <header class="cell-comparison-dialog-header">
+          <div>
+            <span>Cell comparison</span>
+            <strong id="cell-comparison-address"></strong>
+          </div>
+          <button id="close-cell-comparison" class="dialog-close-button" aria-label="Close cell comparison">×</button>
+        </header>
+        <div class="cell-comparison-dialog-grid">
+          <section class="cell-comparison-pane before-comparison">
+            <div class="cell-comparison-pane-heading"><span class="legend-dot removed"></span><strong>Before</strong></div>
+            <pre id="cell-comparison-before"></pre>
+          </section>
+          <section class="cell-comparison-pane after-comparison">
+            <div class="cell-comparison-pane-heading"><span class="legend-dot added"></span><strong>After</strong></div>
+            <pre id="cell-comparison-after"></pre>
+          </section>
+        </div>
+        <div class="cell-comparison-dialog-hint">Press Esc or click outside to close</div>
+      </div>
+    </dialog>
     <div id="hover-tooltip" class="hover-tooltip" role="tooltip" hidden></div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

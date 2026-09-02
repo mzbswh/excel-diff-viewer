@@ -48,12 +48,19 @@
     nextChange: document.getElementById('next-change'),
     navigationUnitSelect: document.getElementById('navigation-unit-select'),
     cellInspector: document.getElementById('cell-inspector'),
+    cellComparisonDialog: document.getElementById('cell-comparison-dialog'),
+    cellComparisonAddress: document.getElementById('cell-comparison-address'),
+    cellComparisonBefore: document.getElementById('cell-comparison-before'),
+    cellComparisonAfter: document.getElementById('cell-comparison-after'),
+    closeCellComparison: document.getElementById('close-cell-comparison'),
     hoverTooltip: document.getElementById('hover-tooltip')
   };
 
   let searchTimer;
   let syncingScroll = false;
   let activeTooltipTarget = null;
+  let tooltipHideTimer;
+  const comparisonTooltips = new WeakMap();
 
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -259,9 +266,9 @@
     const target = pendingTarget || state.selectedCell;
     if (target && page.rows.some((row) => row.index === target.row)) {
       if (target.unit === 'row') {
-        inspectRow(target.row, target.column);
+        inspectRow(target.row, target.column, target.side);
       } else {
-        inspectCell(target.row, target.column);
+        inspectCell(target.row, target.column, target.side);
       }
       const cell = document.querySelector(
         `.diff-table td[data-row="${target.row}"][data-column="${target.column}"]`
@@ -307,7 +314,7 @@
         cell.dataset.row = String(row.index);
         cell.dataset.column = String(page.columns[index].index);
         cell.dataset.side = side;
-        setTooltip(cell, value?.formula || value?.display || '');
+        setTooltip(cell, value ? describeCell(value) : '');
 
         const content = document.createElement('div');
         content.className = 'cell-content';
@@ -321,7 +328,12 @@
           content.append(formula);
         }
         cell.append(content);
-        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index));
+        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index, side));
+        cell.addEventListener('dblclick', () => openCellComparison(row.index, page.columns[index].index));
+        cell.addEventListener('contextmenu', () => {
+          inspectCell(row.index, page.columns[index].index, side);
+          selectCellContents(cell);
+        });
         tr.append(cell);
       }
       body.append(tr);
@@ -366,9 +378,11 @@
         cell.dataset.row = String(row.index);
         cell.dataset.column = String(page.columns[index].index);
         cell.dataset.side = 'unified';
-        setTooltip(cell, status === 'unchanged'
-          ? right?.formula || right?.display || left?.formula || left?.display || ''
-          : `Before: ${describeCell(left)}\nAfter: ${describeCell(right)}`);
+        setComparisonTooltip(cell, {
+          address: `${page.columns[index].label}${row.index + 1}`,
+          left: describeCell(left),
+          right: describeCell(right)
+        });
 
         if (status === 'unchanged') {
           cell.append(createUnifiedValue(right || left, 'current-value', ''));
@@ -380,7 +394,12 @@
             cell.append(createUnifiedValue(right, 'after-value', '+'));
           }
         }
-        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index));
+        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index, 'unified'));
+        cell.addEventListener('dblclick', () => openCellComparison(row.index, page.columns[index].index));
+        cell.addEventListener('contextmenu', () => {
+          inspectCell(row.index, page.columns[index].index, 'unified');
+          selectCellContents(cell);
+        });
         tr.append(cell);
       }
       body.append(tr);
@@ -410,11 +429,9 @@
     return content;
   }
 
-  function inspectCell(rowIndex, columnIndex) {
-    const page = state.pageData;
-    const row = page.rows.find((candidate) => candidate.index === rowIndex);
-    const columnPosition = page.columns.findIndex((column) => column.index === columnIndex);
-    if (!row || columnPosition < 0) {
+  function inspectCell(rowIndex, columnIndex, side) {
+    const comparison = getCellComparison(rowIndex, columnIndex);
+    if (!comparison) {
       return;
     }
     for (const selected of document.querySelectorAll('.diff-table td.selected')) {
@@ -428,24 +445,27 @@
     )) {
       cell.classList.add('selected');
     }
-    state.selectedCell = { row: rowIndex, column: columnIndex, unit: 'cell' };
+    state.selectedCell = {
+      row: rowIndex,
+      column: columnIndex,
+      unit: 'cell',
+      side: side || (state.diffMode === 'unified' ? 'unified' : 'right')
+    };
 
-    const address = `${encodeColumn(columnIndex)}${rowIndex + 1}`;
-    const left = describeCell(row.left[columnPosition]);
-    const right = describeCell(row.right[columnPosition]);
     elements.cellInspector.replaceChildren();
     const addressElement = document.createElement('strong');
-    addressElement.textContent = address;
+    addressElement.textContent = comparison.address;
     elements.cellInspector.append(
       addressElement,
-      document.createTextNode(`   Before: ${left}   →   After: ${right}`)
+      document.createTextNode(`   Before: ${comparison.left}   →   After: ${comparison.right}`)
     );
-    setTooltip(elements.cellInspector, `${address}\nBefore: ${left}\nAfter: ${right}`);
+    elements.cellInspector.classList.add('has-selection');
+    setComparisonTooltip(elements.cellInspector, comparison);
   }
 
-  function inspectRow(rowIndex, columnIndex) {
-    inspectCell(rowIndex, columnIndex);
-    state.selectedCell = { row: rowIndex, column: columnIndex, unit: 'row' };
+  function inspectRow(rowIndex, columnIndex, side) {
+    inspectCell(rowIndex, columnIndex, side);
+    state.selectedCell.unit = 'row';
     for (const row of document.querySelectorAll(`.diff-table td[data-row="${rowIndex}"]`)) {
       row.parentElement?.classList.add('selected-row');
     }
@@ -459,6 +479,97 @@
       return `${cell.display || '∅'}  [${cell.formula}]`;
     }
     return cell.display || '∅';
+  }
+
+  function getCellComparison(rowIndex, columnIndex) {
+    const page = state.pageData;
+    if (!page) {
+      return null;
+    }
+    const row = page.rows.find((candidate) => candidate.index === rowIndex);
+    const columnPosition = page.columns.findIndex((column) => column.index === columnIndex);
+    if (!row || columnPosition < 0) {
+      return null;
+    }
+    return {
+      address: `${encodeColumn(columnIndex)}${rowIndex + 1}`,
+      left: describeCell(row.left[columnPosition]),
+      right: describeCell(row.right[columnPosition])
+    };
+  }
+
+  function openCellComparison(rowIndex, columnIndex) {
+    const comparison = getCellComparison(rowIndex, columnIndex);
+    if (!comparison) {
+      return;
+    }
+    hideTooltip();
+    elements.cellComparisonAddress.textContent = comparison.address;
+    elements.cellComparisonBefore.textContent = comparison.left;
+    elements.cellComparisonAfter.textContent = comparison.right;
+    elements.cellComparisonBefore.scrollTop = 0;
+    elements.cellComparisonBefore.scrollLeft = 0;
+    elements.cellComparisonAfter.scrollTop = 0;
+    elements.cellComparisonAfter.scrollLeft = 0;
+    if (!elements.cellComparisonDialog.open) {
+      elements.cellComparisonDialog.showModal();
+    }
+  }
+
+  function selectCellContents(cell) {
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function selectedCellCopyText() {
+    const selected = state.selectedCell;
+    const page = state.pageData;
+    if (!selected || !page) {
+      return null;
+    }
+    const row = page.rows.find((candidate) => candidate.index === selected.row);
+    const columnPosition = page.columns.findIndex((column) => column.index === selected.column);
+    if (!row || columnPosition < 0) {
+      return null;
+    }
+
+    const left = row.left[columnPosition];
+    const right = row.right[columnPosition];
+    if (selected.side === 'left') {
+      return left?.display || '';
+    }
+    if (selected.side === 'right') {
+      return right?.display || '';
+    }
+    if (row.cells[columnPosition] === 'unchanged') {
+      return (right || left)?.display || '';
+    }
+    return `Before: ${left?.display || ''}\nAfter: ${right?.display || ''}`;
+  }
+
+  function selectionIsInsideSelectedCell(selection) {
+    const toElement = (node) => node instanceof Element ? node : node?.parentElement;
+    const anchorCell = toElement(selection.anchorNode)?.closest('.diff-table td.selected');
+    const focusCell = toElement(selection.focusNode)?.closest('.diff-table td.selected');
+    return Boolean(anchorCell && focusCell);
+  }
+
+  function shouldKeepNativeCopy() {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      (activeElement.matches('input, textarea, select') || activeElement.isContentEditable)
+    ) {
+      return true;
+    }
+    const selection = window.getSelection();
+    return Boolean(selection && !selection.isCollapsed && !selectionIsInsideSelectedCell(selection));
   }
 
   function updatePagination(page) {
@@ -492,7 +603,12 @@
       showError('No changed cells match the current worksheet, filter, and search.');
       return;
     }
-    state.selectedCell = { row: target.row, column: target.column, unit: state.navigationUnit };
+    state.selectedCell = {
+      row: target.row,
+      column: target.column,
+      unit: state.navigationUnit,
+      side: state.selectedCell?.side || (state.diffMode === 'unified' ? 'unified' : 'right')
+    };
     state.pendingFocus = state.selectedCell;
     state.page = target.page;
     requestPage();
@@ -507,6 +623,16 @@
 
   function applyDiffMode(mode, rerender = true) {
     state.diffMode = mode === 'unified' ? 'unified' : 'sideBySide';
+    if (state.selectedCell) {
+      state.selectedCell.side = state.diffMode === 'unified'
+        ? 'unified'
+        : state.selectedCell.side === 'left' ? 'left' : 'right';
+    }
+    if (state.pendingFocus) {
+      state.pendingFocus.side = state.diffMode === 'unified'
+        ? 'unified'
+        : state.pendingFocus.side === 'left' ? 'left' : 'right';
+    }
     elements.diffModeSelect.value = state.diffMode;
     elements.gridShell.classList.toggle('unified-mode', state.diffMode === 'unified');
     elements.columnLabels.classList.toggle('unified-mode', state.diffMode === 'unified');
@@ -538,6 +664,7 @@
     state.selectedCell = null;
     state.pendingFocus = null;
     elements.cellInspector.textContent = 'Select a cell to inspect its value and formula';
+    elements.cellInspector.classList.remove('has-selection');
     setTooltip(elements.cellInspector, '');
   }
 
@@ -575,6 +702,8 @@
       return;
     }
     element.removeAttribute('title');
+    delete element.dataset.tooltipKind;
+    comparisonTooltips.delete(element);
     if (text) {
       element.dataset.tooltip = text;
     } else {
@@ -585,39 +714,97 @@
     }
   }
 
-  function showTooltip(target, clientX, clientY) {
+  function setComparisonTooltip(element, comparison) {
+    element.removeAttribute('title');
+    element.dataset.tooltip = 'Cell comparison';
+    element.dataset.tooltipKind = 'comparison';
+    comparisonTooltips.set(element, comparison);
+  }
+
+  function createComparisonTooltipContent(comparison) {
+    const header = document.createElement('strong');
+    header.className = 'tooltip-comparison-address';
+    header.textContent = comparison.address;
+
+    const grid = document.createElement('div');
+    grid.className = 'tooltip-comparison-grid';
+    for (const [className, label, value] of [
+      ['before-comparison', 'Before', comparison.left],
+      ['after-comparison', 'After', comparison.right]
+    ]) {
+      const pane = document.createElement('section');
+      pane.className = `tooltip-comparison-pane ${className}`;
+      const heading = document.createElement('strong');
+      heading.textContent = label;
+      const content = document.createElement('pre');
+      content.textContent = value;
+      pane.append(heading, content);
+      grid.append(pane);
+    }
+    return [header, grid];
+  }
+
+  function showTooltip(target, clientX) {
     const content = target.dataset.tooltip;
     if (!content) {
       return;
     }
+    window.clearTimeout(tooltipHideTimer);
+    if (activeTooltipTarget === target && !elements.hoverTooltip.hidden) {
+      return;
+    }
     activeTooltipTarget = target;
-    elements.hoverTooltip.textContent = content;
+    const comparison = comparisonTooltips.get(target);
+    elements.hoverTooltip.classList.toggle('comparison-tooltip', Boolean(comparison));
+    if (comparison) {
+      elements.hoverTooltip.replaceChildren(...createComparisonTooltipContent(comparison));
+    } else {
+      elements.hoverTooltip.textContent = content;
+    }
     elements.hoverTooltip.hidden = false;
-    positionTooltip(clientX, clientY);
+    positionTooltip(target, clientX);
   }
 
-  function positionTooltip(clientX, clientY) {
+  function positionTooltip(target, clientX) {
     if (elements.hoverTooltip.hidden) {
       return;
     }
     const margin = 10;
-    const offset = 14;
+    const overlap = 2;
+    const targetBounds = target.getBoundingClientRect();
     const bounds = elements.hoverTooltip.getBoundingClientRect();
-    let left = clientX + offset;
-    let top = clientY + offset;
+    const anchorX = Number.isFinite(clientX)
+      ? clientX
+      : targetBounds.left + targetBounds.width / 2;
+    let left = anchorX - Math.min(24, bounds.width / 2);
+    const spaceBelow = window.innerHeight - targetBounds.bottom - margin + overlap;
+    const spaceAbove = targetBounds.top - margin + overlap;
+    let top = bounds.height <= spaceBelow || spaceBelow >= spaceAbove
+      ? targetBounds.bottom - overlap
+      : targetBounds.top - bounds.height + overlap;
     if (left + bounds.width > window.innerWidth - margin) {
-      left = Math.max(margin, clientX - bounds.width - offset);
+      left = window.innerWidth - bounds.width - margin;
     }
-    if (top + bounds.height > window.innerHeight - margin) {
-      top = Math.max(margin, clientY - bounds.height - offset);
-    }
+    left = Math.max(margin, left);
+    top = Math.max(margin, Math.min(window.innerHeight - bounds.height - margin, top));
     elements.hoverTooltip.style.left = `${left}px`;
     elements.hoverTooltip.style.top = `${top}px`;
   }
 
   function hideTooltip() {
+    window.clearTimeout(tooltipHideTimer);
     activeTooltipTarget = null;
     elements.hoverTooltip.hidden = true;
+  }
+
+  function scheduleTooltipHide() {
+    window.clearTimeout(tooltipHideTimer);
+    tooltipHideTimer = window.setTimeout(() => {
+      if (activeTooltipTarget?.matches(':hover') || elements.hoverTooltip.matches(':hover')) {
+        return;
+      }
+      hideTooltip();
+    }, 500);
   }
 
   function totalChanges(counts) {
@@ -719,6 +906,28 @@
   elements.previousChange.addEventListener('click', () => requestChange('previous'));
   elements.nextChange.addEventListener('click', () => requestChange('next'));
 
+  elements.cellInspector.addEventListener('dblclick', (event) => {
+    if (!state.selectedCell) {
+      return;
+    }
+    event.preventDefault();
+    openCellComparison(state.selectedCell.row, state.selectedCell.column);
+  });
+
+  elements.cellInspector.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && state.selectedCell) {
+      event.preventDefault();
+      openCellComparison(state.selectedCell.row, state.selectedCell.column);
+    }
+  });
+
+  elements.closeCellComparison.addEventListener('click', () => elements.cellComparisonDialog.close());
+  elements.cellComparisonDialog.addEventListener('click', (event) => {
+    if (event.target === elements.cellComparisonDialog) {
+      elements.cellComparisonDialog.close();
+    }
+  });
+
   elements.navigationUnitSelect.addEventListener('change', () => {
     applyNavigationUnit(elements.navigationUnitSelect.value);
     vscode.postMessage({
@@ -776,13 +985,9 @@
   document.addEventListener('pointerover', (event) => {
     const target = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
     if (target) {
-      showTooltip(target, event.clientX, event.clientY);
-    }
-  });
-
-  document.addEventListener('pointermove', (event) => {
-    if (activeTooltipTarget) {
-      positionTooltip(event.clientX, event.clientY);
+      showTooltip(target, event.clientX);
+    } else if (elements.hoverTooltip.contains(event.target)) {
+      window.clearTimeout(tooltipHideTimer);
     }
   });
 
@@ -790,24 +995,54 @@
     if (!activeTooltipTarget) {
       return;
     }
+    const source = event.target;
+    if (
+      !(source instanceof Node) ||
+      (!activeTooltipTarget.contains(source) && !elements.hoverTooltip.contains(source))
+    ) {
+      return;
+    }
     const related = event.relatedTarget;
-    if (!(related instanceof Node) || !activeTooltipTarget.contains(related)) {
-      hideTooltip();
+    if (
+      !(related instanceof Node) ||
+      (!activeTooltipTarget.contains(related) && !elements.hoverTooltip.contains(related))
+    ) {
+      scheduleTooltipHide();
     }
   });
 
   document.addEventListener('focusin', (event) => {
     const target = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
     if (target) {
-      const bounds = target.getBoundingClientRect();
-      showTooltip(target, bounds.left + Math.min(24, bounds.width / 2), bounds.bottom);
+      showTooltip(target);
     }
   });
 
-  document.addEventListener('focusout', () => hideTooltip());
+  document.addEventListener('focusout', (event) => {
+    if (activeTooltipTarget?.contains(event.target)) {
+      scheduleTooltipHide();
+    }
+  });
+
+  elements.hoverTooltip.addEventListener('pointerenter', () => {
+    window.clearTimeout(tooltipHideTimer);
+  });
+  elements.hoverTooltip.addEventListener('pointerleave', () => scheduleTooltipHide());
 
   elements.leftGrid.addEventListener('scroll', () => synchronizeScroll(elements.leftGrid, elements.rightGrid));
   elements.rightGrid.addEventListener('scroll', () => synchronizeScroll(elements.rightGrid, elements.leftGrid));
+
+  document.addEventListener('copy', (event) => {
+    if (shouldKeepNativeCopy()) {
+      return;
+    }
+    const text = selectedCellCopyText();
+    if (text === null || !event.clipboardData) {
+      return;
+    }
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+  });
 
   function synchronizeScroll(source, target) {
     if (syncingScroll) {
