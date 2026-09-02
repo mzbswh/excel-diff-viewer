@@ -2,6 +2,14 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.0.3 - 2026-09-02
+
+- Improved responsive toolbar and footer layouts so controls remain visible with long cell values.
+- Added scrollable cell previews and side-by-side Before/After comparison popups.
+- Added an expanded cell comparison dialog that opens by double-clicking a cell or the footer inspector.
+- Added cell copying through the context menu and Cmd/Ctrl+C.
+- Fixed hover previews disappearing while moving the pointer from After cells into the preview.
+
 ## 1.0.2 - 2026-07-31
 
 - Improved documentation and descriptions.
