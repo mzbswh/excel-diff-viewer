@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import { WorkbookComparison, type RowFilter } from './model';
 
+type TextDiffGranularity = 'character' | 'word' | 'line';
+type TextDiffLayout = 'sideBySide' | 'inline' | 'stacked';
+
 interface RequestPageMessage {
   type: 'requestPage';
   sheet: string;
@@ -11,6 +14,10 @@ interface RequestPageMessage {
 
 interface ReadyMessage {
   type: 'ready';
+}
+
+interface OpenLocalFileMessage {
+  type: 'openLocalFile';
 }
 
 interface RequestChangeMessage {
@@ -26,11 +33,22 @@ interface RequestChangeMessage {
 
 interface UpdateSettingMessage {
   type: 'updateSetting';
-  key: 'theme' | 'diffMode' | 'navigationUnit' | 'rowFilter';
+  key:
+    | 'theme'
+    | 'diffMode'
+    | 'textDiffGranularity'
+    | 'textDiffLayout'
+    | 'navigationUnit'
+    | 'rowFilter';
   value: string;
 }
 
-type WebviewMessage = RequestPageMessage | RequestChangeMessage | UpdateSettingMessage | ReadyMessage;
+type WebviewMessage =
+  | RequestPageMessage
+  | RequestChangeMessage
+  | UpdateSettingMessage
+  | ReadyMessage
+  | OpenLocalFileMessage;
 
 export class ExcelDiffPanel {
   private disposed = false;
@@ -94,9 +112,33 @@ export class ExcelDiffPanel {
         showUnchangedSheets: configuration.get<boolean>('showUnchangedSheets', true),
         theme: configuration.get<'dark' | 'light'>('theme', 'dark'),
         diffMode: configuration.get<'sideBySide' | 'unified'>('diffMode', 'sideBySide'),
+        textDiffGranularity: configuration.get<TextDiffGranularity>(
+          'textDiffGranularity',
+          'character'
+        ),
+        textDiffLayout: configuration.get<TextDiffLayout>('textDiffLayout', 'sideBySide'),
         navigationUnit: configuration.get<'cell' | 'row'>('navigationUnit', 'cell'),
         rowFilter: configuration.get<RowFilter>('rowFilter', 'all')
       });
+      return;
+    }
+    if (message.type === 'openLocalFile') {
+      const localUri = await findLocalWorkbookUri(
+        this.comparison.summary.right.uri,
+        this.comparison.summary.left.uri
+      );
+      if (!localUri) {
+        await vscode.window.showWarningMessage(
+          'The compared workbook could not be found on the local file system.'
+        );
+        return;
+      }
+      try {
+        await vscode.commands.executeCommand('vscode.open', localUri, { preview: false });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await vscode.window.showWarningMessage(`Unable to open ${localUri.fsPath}. ${detail}`);
+      }
       return;
     }
     if (message.type === 'requestPage') {
@@ -136,9 +178,13 @@ export class ExcelDiffPanel {
         ? message.value === 'dark' || message.value === 'light'
         : message.key === 'diffMode'
           ? message.value === 'sideBySide' || message.value === 'unified'
-          : message.key === 'navigationUnit'
-            ? message.value === 'cell' || message.value === 'row'
-            : isRowFilter(message.value);
+          : message.key === 'textDiffGranularity'
+            ? isTextDiffGranularity(message.value)
+            : message.key === 'textDiffLayout'
+              ? isTextDiffLayout(message.value)
+              : message.key === 'navigationUnit'
+                ? message.value === 'cell' || message.value === 'row'
+                : isRowFilter(message.value);
       if (allowed) {
         await vscode.workspace
           .getConfiguration('excelDiffViewer')
@@ -186,6 +232,13 @@ export class ExcelDiffPanel {
         </div>
       </div>
       <div class="summary" id="summary"></div>
+      <button
+        id="open-local-file"
+        class="topbar-open-button"
+        type="button"
+        title="Open the compared workbook in Visual Studio Code"
+        aria-label="Open the compared workbook in Visual Studio Code"
+      ><span aria-hidden="true">↗</span><span>Open</span></button>
     </header>
 
     <div class="workspace">
@@ -284,22 +337,31 @@ export class ExcelDiffPanel {
     <dialog id="cell-comparison-dialog" class="cell-comparison-dialog" aria-labelledby="cell-comparison-address">
       <div class="cell-comparison-dialog-card">
         <header class="cell-comparison-dialog-header">
-          <div>
+          <div class="cell-comparison-dialog-title">
             <span>Cell comparison</span>
             <strong id="cell-comparison-address"></strong>
           </div>
-          <button id="close-cell-comparison" class="dialog-close-button" aria-label="Close cell comparison">×</button>
+          <div class="cell-comparison-dialog-actions">
+            <label class="text-diff-control">
+              <span>Granularity</span>
+              <select id="cell-comparison-granularity" aria-label="Text diff granularity">
+                <option value="character">Characters</option>
+                <option value="word">Words</option>
+                <option value="line">Lines</option>
+              </select>
+            </label>
+            <label class="text-diff-control">
+              <span>Layout</span>
+              <select id="cell-comparison-layout" aria-label="Text diff layout">
+                <option value="sideBySide">Side by side</option>
+                <option value="inline">Inline</option>
+                <option value="stacked">Stacked</option>
+              </select>
+            </label>
+            <button id="close-cell-comparison" class="dialog-close-button" aria-label="Close cell comparison">×</button>
+          </div>
         </header>
-        <div class="cell-comparison-dialog-grid">
-          <section class="cell-comparison-pane before-comparison">
-            <div class="cell-comparison-pane-heading"><span class="legend-dot removed"></span><strong>Before</strong></div>
-            <pre id="cell-comparison-before"></pre>
-          </section>
-          <section class="cell-comparison-pane after-comparison">
-            <div class="cell-comparison-pane-heading"><span class="legend-dot added"></span><strong>After</strong></div>
-            <pre id="cell-comparison-after"></pre>
-          </section>
-        </div>
+        <div id="cell-comparison-body" class="cell-comparison-dialog-grid"></div>
         <div class="cell-comparison-dialog-hint">Press Esc or click outside to close</div>
       </div>
     </dialog>
@@ -313,6 +375,54 @@ export class ExcelDiffPanel {
 
 function isRowFilter(value: string): value is RowFilter {
   return value === 'all' || value === 'changed' || value === 'added' || value === 'removed';
+}
+
+function isTextDiffGranularity(value: string): value is TextDiffGranularity {
+  return value === 'character' || value === 'word' || value === 'line';
+}
+
+function isTextDiffLayout(value: string): value is TextDiffLayout {
+  return value === 'sideBySide' || value === 'inline' || value === 'stacked';
+}
+
+async function findLocalWorkbookUri(...sources: string[]): Promise<vscode.Uri | undefined> {
+  for (const value of sources) {
+    try {
+      const source = vscode.Uri.parse(value);
+      for (const candidatePath of decodedPathCandidates(source.fsPath)) {
+        const localUri = vscode.Uri.file(candidatePath);
+        try {
+          const stat = await vscode.workspace.fs.stat(localUri);
+          if ((stat.type & vscode.FileType.File) !== 0) {
+            return localUri;
+          }
+        } catch {
+          // Try the next decoding level or comparison side.
+        }
+      }
+    } catch {
+      // The comparison side may represent a repository revision without a local counterpart.
+    }
+  }
+  return undefined;
+}
+
+function decodedPathCandidates(value: string): string[] {
+  const candidates = [value];
+  let current = value;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) {
+        break;
+      }
+      candidates.push(decoded);
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+  return candidates;
 }
 
 function createNonce(): string {

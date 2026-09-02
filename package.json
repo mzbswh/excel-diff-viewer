@@ -143,6 +143,36 @@
           "default": "sideBySide",
           "description": "Default Excel diff display mode."
         },
+        "excelDiffViewer.textDiffGranularity": {
+          "type": "string",
+          "enum": [
+            "character",
+            "word",
+            "line"
+          ],
+          "enumDescriptions": [
+            "Highlight individual changed characters.",
+            "Highlight changed words and separators.",
+            "Highlight complete changed lines."
+          ],
+          "default": "character",
+          "description": "Granularity used for text differences in cell comparisons."
+        },
+        "excelDiffViewer.textDiffLayout": {
+          "type": "string",
+          "enum": [
+            "sideBySide",
+            "inline",
+            "stacked"
+          ],
+          "enumDescriptions": [
+            "Show before and after text in two columns.",
+            "Show removed and added fragments in one text flow.",
+            "Show before and after text in two rows."
+          ],
+          "default": "sideBySide",
+          "description": "Layout used for text differences in cell comparisons."
+        },
         "excelDiffViewer.navigationUnit": {
           "type": "string",
           "enum": [

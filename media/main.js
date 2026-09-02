@@ -11,6 +11,8 @@
     showUnchangedSheets: true,
     theme: 'dark',
     diffMode: 'sideBySide',
+    textDiffGranularity: normalizeTextDiffGranularity(previousState.textDiffGranularity),
+    textDiffLayout: normalizeTextDiffLayout(previousState.textDiffLayout),
     navigationUnit: 'cell',
     selectedCell: null,
     pendingFocus: null,
@@ -27,6 +29,7 @@
     rightName: document.getElementById('right-name'),
     rightDetail: document.getElementById('right-detail'),
     summary: document.getElementById('summary'),
+    openLocalFile: document.getElementById('open-local-file'),
     sheetSelect: document.getElementById('sheet-select'),
     sheetDimensions: document.getElementById('sheet-dimensions'),
     themeSelect: document.getElementById('theme-select'),
@@ -50,8 +53,9 @@
     cellInspector: document.getElementById('cell-inspector'),
     cellComparisonDialog: document.getElementById('cell-comparison-dialog'),
     cellComparisonAddress: document.getElementById('cell-comparison-address'),
-    cellComparisonBefore: document.getElementById('cell-comparison-before'),
-    cellComparisonAfter: document.getElementById('cell-comparison-after'),
+    cellComparisonBody: document.getElementById('cell-comparison-body'),
+    cellComparisonGranularity: document.getElementById('cell-comparison-granularity'),
+    cellComparisonLayout: document.getElementById('cell-comparison-layout'),
     closeCellComparison: document.getElementById('close-cell-comparison'),
     hoverTooltip: document.getElementById('hover-tooltip')
   };
@@ -60,7 +64,15 @@
   let syncingScroll = false;
   let activeTooltipTarget = null;
   let tooltipHideTimer;
+  let activeDialogComparison = null;
   const comparisonTooltips = new WeakMap();
+  const textDiffMatrixLimit = 1_000_000;
+  const graphemeSegmenter = typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    : null;
+  const wordSegmenter = typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity: 'word' })
+    : null;
 
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -70,6 +82,8 @@
         message.showUnchangedSheets,
         message.theme,
         message.diffMode,
+        message.textDiffGranularity,
+        message.textDiffLayout,
         message.navigationUnit,
         message.rowFilter
       );
@@ -82,11 +96,22 @@
     }
   });
 
-  function initialize(summary, showUnchangedSheets, theme, diffMode, navigationUnit, rowFilter) {
+  function initialize(
+    summary,
+    showUnchangedSheets,
+    theme,
+    diffMode,
+    textDiffGranularity,
+    textDiffLayout,
+    navigationUnit,
+    rowFilter
+  ) {
     state.summary = summary;
     state.showUnchangedSheets = showUnchangedSheets;
     state.theme = theme === 'light' ? 'light' : 'dark';
     state.diffMode = diffMode === 'unified' ? 'unified' : 'sideBySide';
+    state.textDiffGranularity = normalizeTextDiffGranularity(textDiffGranularity);
+    state.textDiffLayout = normalizeTextDiffLayout(textDiffLayout);
     state.navigationUnit = navigationUnit === 'row' ? 'row' : 'cell';
     state.filter = ['all', 'changed', 'added', 'removed'].includes(rowFilter) ? rowFilter : 'all';
     const leftFileTooltip = formatFileTooltip(summary.left);
@@ -106,6 +131,7 @@
     renderSheetSelector();
     applyTheme(state.theme);
     applyDiffMode(state.diffMode, false);
+    syncTextDiffControls();
     applyNavigationUnit(state.navigationUnit);
 
     const visibleSheets = getVisibleSheets();
@@ -504,16 +530,21 @@
       return;
     }
     hideTooltip();
+    activeDialogComparison = comparison;
     elements.cellComparisonAddress.textContent = comparison.address;
-    elements.cellComparisonBefore.textContent = comparison.left;
-    elements.cellComparisonAfter.textContent = comparison.right;
-    elements.cellComparisonBefore.scrollTop = 0;
-    elements.cellComparisonBefore.scrollLeft = 0;
-    elements.cellComparisonAfter.scrollTop = 0;
-    elements.cellComparisonAfter.scrollLeft = 0;
+    renderCellComparisonDialog();
     if (!elements.cellComparisonDialog.open) {
       elements.cellComparisonDialog.showModal();
     }
+  }
+
+  function renderCellComparisonDialog() {
+    if (!activeDialogComparison) {
+      return;
+    }
+    elements.cellComparisonBody.replaceChildren(
+      createTextComparisonLayout(activeDialogComparison, 'dialog')
+    );
   }
 
   function selectCellContents(cell) {
@@ -645,6 +676,46 @@
     persistState();
   }
 
+  function normalizeTextDiffGranularity(value) {
+    return value === 'word' || value === 'line' ? value : 'character';
+  }
+
+  function normalizeTextDiffLayout(value) {
+    return value === 'inline' || value === 'stacked' ? value : 'sideBySide';
+  }
+
+  function syncTextDiffControls() {
+    elements.cellComparisonGranularity.value = state.textDiffGranularity;
+    elements.cellComparisonLayout.value = state.textDiffLayout;
+  }
+
+  function updateTextDiffSetting(setting, value) {
+    if (setting === 'textDiffGranularity') {
+      state.textDiffGranularity = normalizeTextDiffGranularity(value);
+    } else {
+      state.textDiffLayout = normalizeTextDiffLayout(value);
+    }
+    syncTextDiffControls();
+    persistState();
+    refreshTextDiffViews();
+    vscode.postMessage({ type: 'updateSetting', key: setting, value: state[setting] });
+  }
+
+  function refreshTextDiffViews() {
+    if (elements.cellComparisonDialog.open && activeDialogComparison) {
+      renderCellComparisonDialog();
+    }
+    if (!activeTooltipTarget || elements.hoverTooltip.hidden) {
+      return;
+    }
+    const comparison = comparisonTooltips.get(activeTooltipTarget);
+    if (!comparison) {
+      return;
+    }
+    elements.hoverTooltip.replaceChildren(...createComparisonTooltipContent(comparison));
+    positionTooltip(activeTooltipTarget);
+  }
+
   function applyNavigationUnit(unit) {
     state.navigationUnit = unit === 'row' ? 'row' : 'cell';
     elements.navigationUnitSelect.value = state.navigationUnit;
@@ -685,6 +756,8 @@
       splitRatio: state.splitRatio,
       theme: state.theme,
       diffMode: state.diffMode,
+      textDiffGranularity: state.textDiffGranularity,
+      textDiffLayout: state.textDiffLayout,
       navigationUnit: state.navigationUnit
     });
   }
@@ -722,26 +795,307 @@
   }
 
   function createComparisonTooltipContent(comparison) {
-    const header = document.createElement('strong');
-    header.className = 'tooltip-comparison-address';
-    header.textContent = comparison.address;
+    const header = document.createElement('div');
+    header.className = 'tooltip-comparison-header';
+    const address = document.createElement('strong');
+    address.className = 'tooltip-comparison-address';
+    address.textContent = comparison.address;
+    header.append(address, createTooltipTextDiffControls());
+    return [header, createTextComparisonLayout(comparison, 'tooltip')];
+  }
 
-    const grid = document.createElement('div');
-    grid.className = 'tooltip-comparison-grid';
-    for (const [className, label, value] of [
-      ['before-comparison', 'Before', comparison.left],
-      ['after-comparison', 'After', comparison.right]
+  function createTooltipTextDiffControls() {
+    const controls = document.createElement('div');
+    controls.className = 'text-diff-controls tooltip-text-diff-controls';
+    controls.append(
+      createTooltipTextDiffControl(
+        'Granularity',
+        'textDiffGranularity',
+        state.textDiffGranularity,
+        [
+          ['character', 'Characters'],
+          ['word', 'Words'],
+          ['line', 'Lines']
+        ]
+      ),
+      createTooltipTextDiffControl(
+        'Layout',
+        'textDiffLayout',
+        state.textDiffLayout,
+        [
+          ['sideBySide', 'Side by side'],
+          ['inline', 'Inline'],
+          ['stacked', 'Stacked']
+        ]
+      )
+    );
+    return controls;
+  }
+
+  function createTooltipTextDiffControl(labelText, setting, value, options) {
+    const label = document.createElement('label');
+    label.className = 'text-diff-control';
+    const caption = document.createElement('span');
+    caption.textContent = labelText;
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', `Text diff ${labelText.toLocaleLowerCase()}`);
+    for (const [optionValue, optionLabel] of options) {
+      const option = document.createElement('option');
+      option.value = optionValue;
+      option.textContent = optionLabel;
+      select.append(option);
+    }
+    select.value = value;
+    select.addEventListener('change', () => updateTextDiffSetting(setting, select.value));
+    label.append(caption, select);
+    return label;
+  }
+
+  function createTextComparisonLayout(comparison, variant) {
+    const tooltip = variant === 'tooltip';
+    const container = document.createElement('div');
+    container.className = `${tooltip ? 'tooltip-comparison-grid' : 'cell-comparison-content'} ${textDiffLayoutClass()}`;
+    if (state.textDiffLayout === 'inline') {
+      container.append(createInlineComparisonPane(comparison, tooltip));
+      return container;
+    }
+
+    for (const [className, label, side, dotClass] of [
+      ['before-comparison', 'Before', 'left', 'removed'],
+      ['after-comparison', 'After', 'right', 'added']
     ]) {
       const pane = document.createElement('section');
-      pane.className = `tooltip-comparison-pane ${className}`;
-      const heading = document.createElement('strong');
-      heading.textContent = label;
+      pane.className = `${tooltip ? 'tooltip-comparison-pane' : 'cell-comparison-pane'} ${className}`;
+      if (tooltip) {
+        const heading = document.createElement('strong');
+        heading.textContent = label;
+        pane.append(heading);
+      } else {
+        pane.append(createDialogComparisonHeading(label, dotClass));
+      }
       const content = document.createElement('pre');
-      content.textContent = value;
-      pane.append(heading, content);
-      grid.append(pane);
+      renderTextDiff(content, comparison, side);
+      pane.append(content);
+      container.append(pane);
     }
-    return [header, grid];
+    return container;
+  }
+
+  function createInlineComparisonPane(comparison, tooltip) {
+    const pane = document.createElement('section');
+    pane.className = `${tooltip ? 'tooltip-comparison-pane' : 'cell-comparison-pane'} inline-comparison`;
+    if (tooltip) {
+      const heading = document.createElement('strong');
+      heading.textContent = 'Inline diff';
+      pane.append(heading);
+    } else {
+      const heading = document.createElement('div');
+      heading.className = 'cell-comparison-pane-heading inline-comparison-heading';
+      const removedDot = document.createElement('span');
+      removedDot.className = 'legend-dot removed';
+      const removedLabel = document.createElement('strong');
+      removedLabel.textContent = 'Removed';
+      const addedDot = document.createElement('span');
+      addedDot.className = 'legend-dot added';
+      const addedLabel = document.createElement('strong');
+      addedLabel.textContent = 'Added';
+      heading.append(removedDot, removedLabel, addedDot, addedLabel);
+      pane.append(heading);
+    }
+    const content = document.createElement('pre');
+    renderTextDiff(content, comparison, 'inline');
+    pane.append(content);
+    return pane;
+  }
+
+  function createDialogComparisonHeading(label, dotClass) {
+    const heading = document.createElement('div');
+    heading.className = 'cell-comparison-pane-heading';
+    const dot = document.createElement('span');
+    dot.className = `legend-dot ${dotClass}`;
+    const text = document.createElement('strong');
+    text.textContent = label;
+    heading.append(dot, text);
+    return heading;
+  }
+
+  function textDiffLayoutClass() {
+    return state.textDiffLayout === 'inline'
+      ? 'inline-layout'
+      : state.textDiffLayout === 'stacked'
+        ? 'stacked-layout'
+        : 'side-by-side-layout';
+  }
+
+  function renderTextDiff(element, comparison, side) {
+    const fragments = getTextDiff(comparison)[side];
+    element.replaceChildren();
+    for (const fragment of fragments) {
+      if (fragment.type === 'equal') {
+        element.append(document.createTextNode(fragment.text));
+        continue;
+      }
+      const highlight = document.createElement('span');
+      const changeClass = fragment.type === 'delete' ? 'removed' : 'added';
+      highlight.className = `text-diff-fragment text-diff-${changeClass}`;
+      if (side === 'inline' && fragment.type === 'delete') {
+        highlight.classList.add('text-diff-inline-removed');
+      }
+      highlight.textContent = fragment.text;
+      element.append(highlight);
+    }
+  }
+
+  function getTextDiff(comparison) {
+    if (!comparison.textDiff) {
+      comparison.textDiff = {};
+    }
+    if (!comparison.textDiff[state.textDiffGranularity]) {
+      comparison.textDiff[state.textDiffGranularity] = createTextDiff(
+        comparison.left,
+        comparison.right,
+        state.textDiffGranularity
+      );
+    }
+    return comparison.textDiff[state.textDiffGranularity];
+  }
+
+  function createTextDiff(before, after, granularity) {
+    const beforeUnits = splitTextForDiff(before, granularity);
+    const afterUnits = splitTextForDiff(after, granularity);
+    let prefixLength = 0;
+    while (
+      prefixLength < beforeUnits.length &&
+      prefixLength < afterUnits.length &&
+      beforeUnits[prefixLength] === afterUnits[prefixLength]
+    ) {
+      prefixLength += 1;
+    }
+
+    let suffixLength = 0;
+    while (
+      suffixLength < beforeUnits.length - prefixLength &&
+      suffixLength < afterUnits.length - prefixLength &&
+      beforeUnits[beforeUnits.length - suffixLength - 1] ===
+        afterUnits[afterUnits.length - suffixLength - 1]
+    ) {
+      suffixLength += 1;
+    }
+
+    const beforeMiddle = beforeUnits.slice(prefixLength, beforeUnits.length - suffixLength);
+    const afterMiddle = afterUnits.slice(prefixLength, afterUnits.length - suffixLength);
+    const middleOperations = createMiddleDiff(beforeMiddle, afterMiddle);
+    const operations = [];
+    appendTextDiffOperation(operations, 'equal', beforeUnits.slice(0, prefixLength));
+    for (const operation of middleOperations) {
+      appendTextDiffOperation(operations, operation.type, operation.units);
+    }
+    if (suffixLength > 0) {
+      appendTextDiffOperation(operations, 'equal', beforeUnits.slice(beforeUnits.length - suffixLength));
+    }
+
+    return {
+      left: createSideDiffFragments(operations, 'delete'),
+      right: createSideDiffFragments(operations, 'insert'),
+      inline: operations.map((operation) => ({
+        text: operation.units.join(''),
+        type: operation.type
+      }))
+    };
+  }
+
+  function splitTextForDiff(value, granularity) {
+    if (granularity === 'line') {
+      return value.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) || [];
+    }
+    if (granularity === 'word') {
+      return wordSegmenter
+        ? Array.from(wordSegmenter.segment(value), (part) => part.segment)
+        : value.match(/\s+|[\p{L}\p{N}_]+|[^\p{L}\p{N}_\s]+/gu) || [];
+    }
+    return graphemeSegmenter
+      ? Array.from(graphemeSegmenter.segment(value), (part) => part.segment)
+      : Array.from(value);
+  }
+
+  function createMiddleDiff(beforeUnits, afterUnits) {
+    if (beforeUnits.length === 0) {
+      return afterUnits.length > 0 ? [{ type: 'insert', units: afterUnits }] : [];
+    }
+    if (afterUnits.length === 0) {
+      return [{ type: 'delete', units: beforeUnits }];
+    }
+    if (beforeUnits.length * afterUnits.length > textDiffMatrixLimit) {
+      return [
+        { type: 'delete', units: beforeUnits },
+        { type: 'insert', units: afterUnits }
+      ];
+    }
+
+    const width = afterUnits.length + 1;
+    const lengths = new Uint32Array((beforeUnits.length + 1) * width);
+    for (let beforeIndex = beforeUnits.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+      const rowOffset = beforeIndex * width;
+      const nextRowOffset = (beforeIndex + 1) * width;
+      for (let afterIndex = afterUnits.length - 1; afterIndex >= 0; afterIndex -= 1) {
+        lengths[rowOffset + afterIndex] = beforeUnits[beforeIndex] === afterUnits[afterIndex]
+          ? lengths[nextRowOffset + afterIndex + 1] + 1
+          : Math.max(lengths[nextRowOffset + afterIndex], lengths[rowOffset + afterIndex + 1]);
+      }
+    }
+
+    const operations = [];
+    let beforeIndex = 0;
+    let afterIndex = 0;
+    while (beforeIndex < beforeUnits.length && afterIndex < afterUnits.length) {
+      if (beforeUnits[beforeIndex] === afterUnits[afterIndex]) {
+        appendTextDiffOperation(operations, 'equal', [beforeUnits[beforeIndex]]);
+        beforeIndex += 1;
+        afterIndex += 1;
+      } else if (
+        lengths[(beforeIndex + 1) * width + afterIndex] >=
+        lengths[beforeIndex * width + afterIndex + 1]
+      ) {
+        appendTextDiffOperation(operations, 'delete', [beforeUnits[beforeIndex]]);
+        beforeIndex += 1;
+      } else {
+        appendTextDiffOperation(operations, 'insert', [afterUnits[afterIndex]]);
+        afterIndex += 1;
+      }
+    }
+    appendTextDiffOperation(operations, 'delete', beforeUnits.slice(beforeIndex));
+    appendTextDiffOperation(operations, 'insert', afterUnits.slice(afterIndex));
+    return operations;
+  }
+
+  function appendTextDiffOperation(operations, type, units) {
+    if (units.length === 0) {
+      return;
+    }
+    const previous = operations[operations.length - 1];
+    if (previous?.type === type) {
+      previous.units.push(...units);
+    } else {
+      operations.push({ type, units: [...units] });
+    }
+  }
+
+  function createSideDiffFragments(operations, changedType) {
+    const fragments = [];
+    for (const operation of operations) {
+      if (operation.type !== 'equal' && operation.type !== changedType) {
+        continue;
+      }
+      const text = operation.units.join('');
+      const type = operation.type;
+      const previous = fragments[fragments.length - 1];
+      if (previous?.type === type) {
+        previous.text += text;
+      } else {
+        fragments.push({ text, type });
+      }
+    }
+    return fragments;
   }
 
   function showTooltip(target, clientX) {
@@ -898,6 +1252,10 @@
     vscode.postMessage({ type: 'updateSetting', key: 'theme', value: state.theme });
   });
 
+  elements.openLocalFile.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openLocalFile' });
+  });
+
   elements.diffModeSelect.addEventListener('change', () => {
     applyDiffMode(elements.diffModeSelect.value);
     vscode.postMessage({ type: 'updateSetting', key: 'diffMode', value: state.diffMode });
@@ -922,10 +1280,19 @@
   });
 
   elements.closeCellComparison.addEventListener('click', () => elements.cellComparisonDialog.close());
+  elements.cellComparisonGranularity.addEventListener('change', () => {
+    updateTextDiffSetting('textDiffGranularity', elements.cellComparisonGranularity.value);
+  });
+  elements.cellComparisonLayout.addEventListener('change', () => {
+    updateTextDiffSetting('textDiffLayout', elements.cellComparisonLayout.value);
+  });
   elements.cellComparisonDialog.addEventListener('click', (event) => {
     if (event.target === elements.cellComparisonDialog) {
       elements.cellComparisonDialog.close();
     }
+  });
+  elements.cellComparisonDialog.addEventListener('close', () => {
+    activeDialogComparison = null;
   });
 
   elements.navigationUnitSelect.addEventListener('change', () => {

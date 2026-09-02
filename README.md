@@ -68,6 +68,8 @@ Excel Diff Viewer is read-only. It does not modify either workbook.
 | `excelDiffViewer.autoOpenScmDiff` | `true` | Replace compatible Excel SCM diff tabs automatically. |
 | `excelDiffViewer.theme` | `dark` | Use the viewer's `dark` or `light` theme. |
 | `excelDiffViewer.diffMode` | `sideBySide` | Use `sideBySide` or `unified` comparison. |
+| `excelDiffViewer.textDiffGranularity` | `character` | Highlight cell text changes by `character`, `word`, or `line`. |
+| `excelDiffViewer.textDiffLayout` | `sideBySide` | Show cell text changes as `sideBySide`, `inline`, or `stacked`. |
 | `excelDiffViewer.navigationUnit` | `cell` | Navigate by changed `cell` or changed `row`. |
 | `excelDiffViewer.rowFilter` | `all` | Initially show `all`, `changed`, `added`, or `removed` rows. |
 | `excelDiffViewer.pageSize` | `200` | Render between 50 and 1,000 worksheet rows per page. |
