@@ -2,6 +2,12 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.0.4 - 2026-09-02
+
+- Added character-, word-, and line-level text differences to cell comparison previews and dialogs.
+- Added side-by-side, inline, and stacked layouts for cell text comparisons.
+- Added a top-bar action that opens the compared local workbook in Visual Studio Code, including URL-encoded file paths.
+
 ## 1.0.3 - 2026-09-02
 
 - Improved responsive toolbar and footer layouts so controls remain visible with long cell values.
