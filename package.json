@@ -2,7 +2,7 @@
   "name": "excel-diff-viewer",
   "displayName": "Excel Diff Viewer",
   "description": "A modern side-by-side Excel workbook diff viewer for Visual Studio Code.",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "publisher": "mzbswh",
   "author": {
     "name": "mzbswh"
@@ -186,19 +186,26 @@
           "default": "cell",
           "description": "Unit used by previous and next change navigation."
         },
+        "excelDiffViewer.focusChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Focus on changed rows and columns. Remembers the last selection across comparisons."
+        },
         "excelDiffViewer.rowFilter": {
           "type": "string",
           "enum": [
             "all",
             "changed",
+            "modified",
             "added",
             "removed"
           ],
           "enumDescriptions": [
             "Show all worksheet rows.",
             "Show every row containing a difference.",
-            "Show rows containing only added cells.",
-            "Show rows containing only removed cells."
+            "Show rows with modified values and skip added or removed cells during navigation.",
+            "Show rows with additions, including new columns and newly filled cells.",
+            "Show rows with removals, including deleted columns and cleared cells."
           ],
           "default": "all",
           "description": "Last selected row filter in Excel Diff Viewer."

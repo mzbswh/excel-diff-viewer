@@ -57,7 +57,15 @@ Run **Excel Diff Viewer: Compare Two Files** from the Command Palette and choose
 
 ## Comparison behavior
 
-The comparison is coordinate-based. Worksheets are matched by name, and cells are matched by address. Values, formulas, and cell types participate in equality. Rows are the primary summary and navigation unit; cell highlights show the exact differences.
+Worksheets are matched by name. Columns are aligned by a complete, unique text header in the first used row when enough shared fields retain their order. Inserted and deleted columns no longer shift subsequent comparisons. Renamed columns can be matched conservatively using sampled contents between shared fields; the changed header remains highlighted. Column headings and cell previews show the original Before/After addresses. Other layouts fall back to address-based comparison. Values, formulas, and cell types participate in equality. Rows are aligned using unique `id`/`key` values when available, otherwise shared row contents and local similarity. Inserting or deleting rows does not shift subsequent comparisons; blank inserted rows are also shown. An existing row with added or removed cells counts as modified, not as an added or removed row. The overview separates affected rows, column structure, and cell changes. Position-only changes use amber row/column labels without highlighting unchanged contents.
+
+Use **Modified** to focus on changed values and navigate past added/deleted cells when a structural change affects many rows. **Changed** includes every difference; **Added** and **Removed** select rows containing additions/removals, including inserted/deleted columns and individual cell values. Empty filtered results explain the remaining worksheet changes and offer **Show all changes**; they do not imply the workbook is unchanged. Cell details include original values when formatting masks precision, and distinguish text from numeric values when types differ.
+
+**Focus changes** is off by default and remembers your last selection across comparison tabs and restarts (`excelDiffViewer.focusChanges`). When enabled, it shows the records and fields relevant to the current change filter. Added/removed columns retain all records; added/removed rows retain all fields; modified cells retain only matching rows and columns. Header-only changes retain the header area. ID/key, name, and neighboring rows/columns are not automatically retained; columns are shown only when involved in the selected changes, explicitly frozen, or manually expanded. Recognized headers and explicitly frozen rows/columns remain visible. Hidden columns leave no placeholder in the table: use **columns hidden · Show all** beside the counts to restore them. Row separators let you explicitly expand context (up to 50 rows at a time), without altering matching counts. Column selection is stable across pages and original Before/After addresses are retained. Filter, search, worksheet, or Focus changes settings reset expanded context.
+
+Use **Freeze rows** and **Cols** in the toolbar to pin the first 0–20 aligned rows/columns. Frozen rows remain visible across pages; frozen columns remain available in focused views. These controls work in both views and are remembered for the comparison tab. Small panes limit freezing to leave scrolling space; a notice appears when the requested amount cannot fit. Set both to 0 to unfreeze (the row-number and column-letter headings remain sticky).
+
+Drag the right edge of a column heading to resize its width, or the bottom edge of a row number to resize its height. Both comparison panes update together and frozen offsets are recalculated. Custom row heights allow wrapped text. Sizes are remembered per worksheet within the comparison tab; double-click an edge to restore the default. Focus a resize edge and use arrow keys for keyboard adjustment.
 
 Excel Diff Viewer is read-only. It does not modify either workbook.
 
@@ -71,7 +79,7 @@ Excel Diff Viewer is read-only. It does not modify either workbook.
 | `excelDiffViewer.textDiffGranularity` | `character` | Highlight cell text changes by `character`, `word`, or `line`. |
 | `excelDiffViewer.textDiffLayout` | `sideBySide` | Show cell text changes as `sideBySide`, `inline`, or `stacked`. |
 | `excelDiffViewer.navigationUnit` | `cell` | Navigate by changed `cell` or changed `row`. |
-| `excelDiffViewer.rowFilter` | `all` | Initially show `all`, `changed`, `added`, or `removed` rows. |
+| `excelDiffViewer.rowFilter` | `all` | Initially select `all`, `changed`, `modified`, `added`, or `removed` differences. |
 | `excelDiffViewer.pageSize` | `200` | Render between 50 and 1,000 worksheet rows per page. |
 | `excelDiffViewer.ignoreWhitespace` | `false` | Ignore leading, trailing, and repeated whitespace in text cells. |
 | `excelDiffViewer.showUnchangedSheets` | `true` | Include unchanged worksheets in the sheet navigator. |
@@ -86,7 +94,7 @@ The extension runs on macOS, Windows, and Linux wherever the selected workbook U
 ## Known limitations
 
 - Formatting-only changes, charts, images, pivot tables, and VBA content are not compared.
-- Rows and columns are not structurally aligned after insertions; comparison remains address-based.
+- Blank, duplicate, merged, reordered, or unrecognizable headers use address-based column comparison. Ambiguous row replacements and large unmatched regions fall back to local position pairing; repeated identical rows cannot always be assigned a unique insertion position. Ambiguous column renames may appear as a removed and an added column. Formula references are compared literally, even when columns move.
 - Password-protected or unsupported workbook content may fail to parse.
 - Automatic takeover requires a standard Visual Studio Code text diff tab.
 - Very large workbooks are parsed in full before pages are rendered.

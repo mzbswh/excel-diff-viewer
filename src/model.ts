@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import * as XLSX from 'xlsx';
+import { alignColumns, type ColumnView } from './columns';
+import { alignRows, type RowAlignment } from './rows';
 
 export type DiffStatus = 'unchanged' | 'changed' | 'added' | 'removed';
-export type RowFilter = 'all' | 'changed' | 'added' | 'removed';
+export type RowFilter = 'all' | 'changed' | 'modified' | 'added' | 'removed';
 
 export interface FileDescriptor {
   name: string;
@@ -13,6 +15,7 @@ export interface FileDescriptor {
 
 export interface CellView {
   display: string;
+  raw?: string;
   formula?: string;
   type?: string;
 }
@@ -28,6 +31,7 @@ export interface SheetSummary {
   status: DiffStatus;
   rowChanges: ChangeCounts;
   cellChanges: ChangeCounts;
+  columnChanges: ChangeCounts;
   rows: number;
   columns: number;
 }
@@ -45,6 +49,8 @@ export interface WorkbookSummary {
 
 export interface RowView {
   index: number;
+  leftIndex?: number;
+  rightIndex?: number;
   status: DiffStatus;
   left: Array<CellView | null>;
   right: Array<CellView | null>;
@@ -53,8 +59,13 @@ export interface RowView {
 
 export interface SheetPage {
   sheet: string;
-  columns: Array<{ index: number; label: string }>;
+  columns: ColumnView[];
   rows: RowView[];
+  frozenRows: RowView[];
+  contextRows: RowView[];
+  filterCounts: Record<RowFilter, number>;
+  totalColumns: number;
+  sheetRows: number;
   page: number;
   pageSize: number;
   totalRows: number;
@@ -75,18 +86,12 @@ interface ChangeLocation {
   status: Exclude<DiffStatus, 'unchanged'>;
 }
 
-interface Bounds {
-  startRow: number;
-  endRow: number;
-  startColumn: number;
-  endColumn: number;
-}
-
 interface SheetModel {
   name: string;
   left?: XLSX.WorkSheet;
   right?: XLSX.WorkSheet;
-  bounds?: Bounds;
+  columns: ColumnView[];
+  rows: RowAlignment[];
   summary: SheetSummary;
   rowStatuses: Map<number, DiffStatus>;
   occupiedRows: number[];
@@ -183,7 +188,8 @@ export class WorkbookComparison {
     page: number,
     pageSize: number,
     filter: RowFilter,
-    query: string
+    query: string,
+    options: { freezeRows?: number; freezeColumns?: number; focusChanges?: boolean; expandedRows?: number[]; expandedColumns?: number[] } = {}
   ): SheetPage {
     const sheet = this.sheets.get(sheetName);
     if (!sheet) {
@@ -191,9 +197,9 @@ export class WorkbookComparison {
     }
 
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const rowIndexes = selectRows(sheet, filter, normalizedQuery);
+    const rowIndexes = selectViewRows(sheet, filter, normalizedQuery, options.focusChanges === true);
     const totalRows = rowIndexes === undefined
-      ? Math.max(0, (sheet.bounds?.endRow ?? -1) - (sheet.bounds?.startRow ?? 0) + 1)
+      ? sheet.rows.length
       : rowIndexes.length;
     const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
     const safePage = Math.max(0, Math.min(Math.trunc(page), totalPages - 1));
@@ -202,7 +208,7 @@ export class WorkbookComparison {
     const visibleRows: number[] = [];
 
     if (rowIndexes === undefined) {
-      const start = (sheet.bounds?.startRow ?? 0) + offset;
+      const start = offset;
       for (let index = 0; index < count; index += 1) {
         visibleRows.push(start + index);
       }
@@ -210,38 +216,75 @@ export class WorkbookComparison {
       visibleRows.push(...rowIndexes.slice(offset, offset + count));
     }
 
-    const columns: Array<{ index: number; label: string }> = [];
-    if (sheet.bounds) {
-      for (let column = sheet.bounds.startColumn; column <= sheet.bounds.endColumn; column += 1) {
-        columns.push({ index: column, label: XLSX.utils.encode_col(column) });
+    const filterCounts = Object.fromEntries(
+      (['all', 'changed', 'modified', 'added', 'removed'] as const).map((candidate) =>
+        [candidate, selectRows(sheet, candidate, normalizedQuery)?.length ?? sheet.rows.length])
+    ) as Record<RowFilter, number>;
+    const freezeRows = Math.min(sheet.rows.length, Math.max(0, Math.min(20, Math.trunc(options.freezeRows ?? 0))));
+    const freezeColumns = Math.max(0, Math.min(20, Math.trunc(options.freezeColumns ?? 0)));
+    let columns = sheet.columns;
+    if (options.focusChanges && totalRows > 0) {
+      const selected = rowIndexes === undefined ? undefined : new Set(rowIndexes);
+      const matches = new Set(sheet.changedCells.filter((cell) => (!selected || selected.has(cell.row)) &&
+        (filter === 'all' || filter === 'changed' || cell.status === (filter === 'modified' ? 'changed' : filter))).map((cell) => cell.column));
+      for (const column of sheet.columns) {
+        if ((column.status === 'added' || column.status === 'removed') && (filter === 'all' || filter === 'changed' ||
+          column.status === (filter === 'modified' ? 'changed' : filter))) { matches.add(column.index); }
+      }
+      const includesStructuralRow = sheet.rows.some((row, index) =>
+        (!selected || selected.has(index)) &&
+        ((row.leftIndex === undefined && (filter === 'all' || filter === 'changed' || filter === 'added')) ||
+         (row.rightIndex === undefined && (filter === 'all' || filter === 'changed' || filter === 'removed'))));
+      const expanded = new Set(options.expandedColumns);
+      if (!includesStructuralRow && matches.size) {
+        columns = sheet.columns.filter((column, index) => index < freezeColumns || matches.has(column.index) ||
+          expanded.has(column.index));
       }
     }
 
-    const rows = visibleRows.map((rowIndex) => {
+    const makeRow = (rowIndex: number): RowView => {
+      const alignment = sheet.rows[rowIndex]!;
       const left: Array<CellView | null> = [];
       const right: Array<CellView | null> = [];
       const cells: DiffStatus[] = [];
       for (const column of columns) {
-        const address = XLSX.utils.encode_cell({ r: rowIndex, c: column.index });
-        const leftCell = sheet.left?.[address] as XLSX.CellObject | undefined;
-        const rightCell = sheet.right?.[address] as XLSX.CellObject | undefined;
+        const leftCell = readCell(sheet.left, alignment.leftIndex, column.leftIndex);
+        const rightCell = readCell(sheet.right, alignment.rightIndex, column.rightIndex);
         left.push(toCellView(leftCell));
         right.push(toCellView(rightCell));
-        cells.push(compareCells(leftCell, rightCell, this.ignoreWhitespace));
+        cells.push(alignment.leftIndex === undefined ? 'added' : alignment.rightIndex === undefined ? 'removed'
+          : compareCells(leftCell, rightCell, this.ignoreWhitespace));
       }
       return {
         index: rowIndex,
+        ...alignment,
         status: sheet.rowStatuses.get(rowIndex) ?? 'unchanged',
         left,
         right,
         cells
-      } satisfies RowView;
-    });
+      };
+    };
+    const context = new Set<number>();
+    if ((filter !== 'all' || options.focusChanges) && totalRows > 0) {
+      // Headers explain the values; surrounding records are only shown on request.
+      const headerCount = detectHeaderRows(sheet);
+      for (let row = 0; row < headerCount; row += 1) { context.add(row); }
+      for (const row of options.expandedRows ?? []) {
+        if (Number.isInteger(row) && row >= 0 && row < sheet.rows.length) { context.add(row); }
+      }
+    }
+    const rows = visibleRows.map(makeRow);
+    const frozenRows = Array.from({ length: freezeRows }, (_, row) => makeRow(row));
 
     return {
       sheet: sheetName,
       columns,
       rows,
+      frozenRows,
+      contextRows: [...context].sort((a, b) => a - b).map(makeRow),
+      filterCounts,
+      totalColumns: sheet.columns.length,
+      sheetRows: sheet.rows.length,
       page: safePage,
       pageSize,
       totalRows,
@@ -259,17 +302,19 @@ export class WorkbookComparison {
     unit: 'row' | 'cell',
     pageSize: number,
     filter: RowFilter,
-    query: string
+    query: string,
+    focusChanges = false
   ): ChangeNavigationTarget | undefined {
     const sheet = this.sheets.get(sheetName);
     if (!sheet) {
       return undefined;
     }
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const selectedRows = selectRows(sheet, filter, normalizedQuery);
+    const selectedRows = selectViewRows(sheet, filter, normalizedQuery, focusChanges);
     const visibleRows = selectedRows === undefined ? undefined : new Set(selectedRows);
     const candidates = sheet.changedCells.filter((location) => {
-      const matchesFilter = filter === 'all' || filter === 'changed' || location.status === filter;
+      const matchesFilter = filter === 'all' || filter === 'changed' ||
+        location.status === (filter === 'modified' ? 'changed' : filter);
       const rowIsVisible = visibleRows === undefined || visibleRows.has(location.row);
       return matchesFilter && rowIsVisible;
     });
@@ -321,7 +366,7 @@ export class WorkbookComparison {
       return undefined;
     }
     const rowPosition = selectedRows === undefined
-      ? target.row - (sheet.bounds?.startRow ?? 0)
+      ? target.row
       : selectedRows.indexOf(target.row);
     return {
       row: target.row,
@@ -337,8 +382,31 @@ function buildSheetModel(
   right: XLSX.WorkSheet | undefined,
   ignoreWhitespace: boolean
 ): SheetModel {
-  const bounds = unionBounds(readBounds(left), readBounds(right));
-  const addresses = new Set<string>([...cellAddresses(left), ...cellAddresses(right)]);
+  const cellFingerprint = (cell: XLSX.CellObject) => fingerprint(cell, ignoreWhitespace);
+  let columns = alignColumns(left, right, cellFingerprint);
+  let rows = alignRows(left, right, columns, cellFingerprint);
+  if (columns.some((column) => column.status === 'added') && columns.some((column) => column.status === 'removed')) {
+    // Row insertions can obscure a column rename in the initial content sample.
+    columns = alignColumns(left, right, cellFingerprint, rows);
+    rows = alignRows(left, right, columns, cellFingerprint);
+  }
+  const addresses = new Set<string>();
+  const leftRows = new Set<number>();
+  const rightRows = new Set<number>();
+  for (const [sheet, side, occupied] of [[left, 'leftIndex', leftRows], [right, 'rightIndex', rightRows]] as const) {
+    const mapping = new Map(columns.flatMap((column) =>
+      column[side] === undefined ? [] : [[column[side]!, column.index] as const]));
+    const rowMapping = new Map(rows.flatMap((row, index) => row[side] === undefined ? [] : [[row[side]!, index] as const]));
+    for (const address of cellAddresses(sheet)) {
+      const decoded = tryDecodeCell(address);
+      if (!decoded) { continue; }
+      const row = rowMapping.get(decoded.r);
+      if (row === undefined) { continue; }
+      if (!isEmpty(sheet?.[address] as XLSX.CellObject | undefined)) { occupied.add(row); }
+      const column = mapping.get(decoded.c);
+      if (column !== undefined) { addresses.add(XLSX.utils.encode_cell({ r: row, c: column })); }
+    }
+  }
   const rowStatuses = new Map<number, DiffStatus>();
   const changedCells: ChangeLocation[] = [];
   const occupiedRows = new Set<number>();
@@ -352,9 +420,11 @@ function buildSheetModel(
       continue;
     }
     occupiedRows.add(decoded.r);
+    const column = columns[decoded.c]!;
+    const alignment = rows[decoded.r]!;
     const status = compareCells(
-      left?.[address] as XLSX.CellObject | undefined,
-      right?.[address] as XLSX.CellObject | undefined,
+      readCell(left, alignment.leftIndex, column.leftIndex),
+      readCell(right, alignment.rightIndex, column.rightIndex),
       ignoreWhitespace
     );
     if (status === 'unchanged') {
@@ -368,15 +438,27 @@ function buildSheetModel(
     } else {
       removed += 1;
     }
-    rowStatuses.set(decoded.r, mergeRowStatus(rowStatuses.get(decoded.r), status));
+    rowStatuses.set(decoded.r, alignment.leftIndex === undefined ? 'added'
+      : alignment.rightIndex === undefined ? 'removed' : 'changed');
   }
+
+  rows.forEach((row, index) => {
+    if (row.leftIndex !== undefined && row.rightIndex !== undefined) { return; }
+    const status = row.leftIndex === undefined ? 'added' : 'removed';
+    rowStatuses.set(index, status);
+    occupiedRows.add(index);
+    // Blank inserted/deleted rows still need a navigation target.
+    if (!leftRows.has(index) && !rightRows.has(index) && columns.length) {
+      changedCells.push({ row: index, column: 0, status });
+    }
+  });
 
   let status: DiffStatus = 'unchanged';
   if (!left && right) {
     status = 'added';
   } else if (left && !right) {
     status = 'removed';
-  } else if (changed + added + removed > 0) {
+  } else if (rowStatuses.size > 0) {
     status = 'changed';
   }
 
@@ -391,7 +473,8 @@ function buildSheetModel(
     name,
     left,
     right,
-    bounds,
+    columns,
+    rows,
     rowStatuses,
     occupiedRows: [...occupiedRows].sort((a, b) => a - b),
     changedCells: changedCells.sort((a, b) => a.row - b.row || a.column - b.column),
@@ -400,10 +483,43 @@ function buildSheetModel(
       status,
       rowChanges,
       cellChanges: { changed, added, removed },
-      rows: bounds ? bounds.endRow - bounds.startRow + 1 : 0,
-      columns: bounds ? bounds.endColumn - bounds.startColumn + 1 : 0
+      rows: rows.length,
+      columnChanges: {
+        added: columns.filter((column) => column.status === 'added').length,
+        removed: columns.filter((column) => column.status === 'removed').length,
+        changed: columns.filter((column) => column.status === 'changed').length
+      },
+      columns: columns.length
     }
   };
+}
+
+function detectHeaderRows(sheet: SheetModel): number {
+  if (!sheet.rows.length) { return 0; }
+  // Game configuration sheets commonly use field names, descriptions, then types.
+  // Require a mostly typed row near the top rather than treating all text as headers.
+  for (let index = 1; index < Math.min(5, sheet.rows.length); index += 1) {
+    const row = sheet.rows[index]!;
+    const values = sheet.columns.map((column) => readCell(sheet.right, row.rightIndex, column.rightIndex)?.v ??
+      readCell(sheet.left, row.leftIndex, column.leftIndex)?.v).filter((value) => value !== undefined && value !== '');
+    const types = values.filter((value) => typeof value === 'string' &&
+      /^(int(?:32|64)?|long|short|float|double|decimal|number|bool(?:ean)?|string|text|date(?:time)?|enum|json)(?:\[\])?$/i.test(value.trim()));
+    if (values.length >= 2 && types.length / values.length >= 0.7) { return index + 1; }
+  }
+  return 1;
+}
+
+// Keep page selection and navigation on the same logical row set.
+function selectViewRows(sheet: SheetModel, filter: RowFilter, query: string, focus: boolean): number[] | undefined {
+  if (!focus) { return selectRows(sheet, filter, query); }
+  const structuralColumns = sheet.columns.some((column) =>
+    (column.status === 'added' || column.status === 'removed') &&
+    (filter === 'all' || filter === 'changed' || filter === column.status));
+  if (structuralColumns) {
+    return sheet.rows.flatMap((_, index) => !query || rowMatches(sheet, index, query) ? [index] : []);
+  }
+  if (filter === 'all' && sheet.summary.status === 'unchanged') { return selectRows(sheet, filter, query); }
+  return selectRows(sheet, filter === 'all' ? 'changed' : filter, query);
 }
 
 function selectRows(
@@ -418,11 +534,20 @@ function selectRows(
   let candidates: number[];
   if (filter === 'all') {
     candidates = sheet.occupiedRows;
+  } else if (filter === 'changed') {
+    candidates = [...sheet.rowStatuses.keys()].sort((a, b) => a - b);
   } else {
-    candidates = [...sheet.rowStatuses.entries()]
-      .filter(([, status]) => filter === 'changed' ? status !== 'unchanged' : status === filter)
-      .map(([row]) => row)
-      .sort((a, b) => a - b);
+    const cellStatus = filter === 'modified' ? 'changed' : filter;
+    const matchingRows = new Set(sheet.changedCells
+      .filter((cell) => cell.status === cellStatus)
+      .map((cell) => cell.row));
+    // Include structural rows even if they contain no populated cells.
+    if (filter !== 'modified') {
+      for (const [row, status] of sheet.rowStatuses) {
+        if (status === filter) { matchingRows.add(row); }
+      }
+    }
+    candidates = [...matchingRows].sort((a, b) => a - b);
   }
 
   if (normalizedQuery.length === 0) {
@@ -433,13 +558,11 @@ function selectRows(
 }
 
 function rowMatches(sheet: SheetModel, row: number, query: string): boolean {
-  if (!sheet.bounds) {
-    return false;
-  }
-  for (let column = sheet.bounds.startColumn; column <= sheet.bounds.endColumn; column += 1) {
-    const address = XLSX.utils.encode_cell({ r: row, c: column });
-    const left = toCellView(sheet.left?.[address] as XLSX.CellObject | undefined);
-    const right = toCellView(sheet.right?.[address] as XLSX.CellObject | undefined);
+  const alignment = sheet.rows[row];
+  if (!alignment) { return false; }
+  for (const column of sheet.columns) {
+    const left = toCellView(readCell(sheet.left, alignment.leftIndex, column.leftIndex));
+    const right = toCellView(readCell(sheet.right, alignment.rightIndex, column.rightIndex));
     if (
       left?.display.toLocaleLowerCase().includes(query) ||
       left?.formula?.toLocaleLowerCase().includes(query) ||
@@ -520,49 +643,14 @@ function toCellView(cell: XLSX.CellObject | undefined): CellView | null {
   }
   return {
     display,
+    ...(cell.v !== undefined && rawValue(cell.v) !== display ? { raw: rawValue(cell.v) } : {}),
     ...(cell.f ? { formula: `=${cell.f}` } : {}),
     ...(cell.t ? { type: cell.t } : {})
   };
 }
 
-function mergeRowStatus(current: DiffStatus | undefined, next: DiffStatus): DiffStatus {
-  if (!current) {
-    return next;
-  }
-  return current === next ? current : 'changed';
-}
-
-function readBounds(sheet: XLSX.WorkSheet | undefined): Bounds | undefined {
-  const reference = sheet?.['!ref'];
-  if (!reference) {
-    return undefined;
-  }
-  try {
-    const range = XLSX.utils.decode_range(reference);
-    return {
-      startRow: range.s.r,
-      endRow: range.e.r,
-      startColumn: range.s.c,
-      endColumn: range.e.c
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-function unionBounds(left: Bounds | undefined, right: Bounds | undefined): Bounds | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return {
-    startRow: Math.min(left.startRow, right.startRow),
-    endRow: Math.max(left.endRow, right.endRow),
-    startColumn: Math.min(left.startColumn, right.startColumn),
-    endColumn: Math.max(left.endColumn, right.endColumn)
-  };
+function readCell(sheet: XLSX.WorkSheet | undefined, row: number | undefined, column: number | undefined): XLSX.CellObject | undefined {
+  return row === undefined || column === undefined ? undefined : sheet?.[XLSX.utils.encode_cell({ r: row, c: column })] as XLSX.CellObject | undefined;
 }
 
 function cellAddresses(sheet: XLSX.WorkSheet | undefined): string[] {

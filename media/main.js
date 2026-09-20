@@ -19,7 +19,16 @@
     splitRatio: Number.isFinite(previousState.splitRatio)
       ? Math.max(0.1, Math.min(0.9, previousState.splitRatio))
       : 0.5,
-    requestId: 0
+    requestId: 0,
+    navigationRequestId: 0,
+    freezeRows: normalizeFreeze(previousState.freezeRows),
+    freezeColumns: normalizeFreeze(previousState.freezeColumns),
+    focusChanges: previousState.focusPreferenceVersion === 2 && previousState.focusChanges === true,
+    expandedRows: [],
+    expandedColumns: [],
+    preserveScroll: null,
+    sheetSizes: previousState.sheetSizes || {},
+    autoSelectFilter: false
   };
 
   const elements = {
@@ -35,6 +44,11 @@
     themeSelect: document.getElementById('theme-select'),
     diffModeSelect: document.getElementById('diff-mode-select'),
     search: document.getElementById('search'),
+    freezeRows: document.getElementById('freeze-rows'),
+    freezeColumns: document.getElementById('freeze-columns'),
+    focusChanges: document.getElementById('focus-changes'),
+    filterSummary: document.getElementById('filter-summary'),
+    freezeNote: document.getElementById('freeze-note'),
     leftGrid: document.getElementById('left-grid'),
     rightGrid: document.getElementById('right-grid'),
     unifiedGrid: document.getElementById('unified-grid'),
@@ -42,6 +56,10 @@
     gridShell: document.getElementById('grid-shell'),
     splitter: document.getElementById('splitter'),
     emptyState: document.getElementById('empty-state'),
+    emptyIcon: document.getElementById('empty-icon'),
+    emptyTitle: document.getElementById('empty-title'),
+    emptyDetail: document.getElementById('empty-detail'),
+    emptyShowChanges: document.getElementById('empty-show-changes'),
     errorBanner: document.getElementById('error-banner'),
     previousPage: document.getElementById('previous-page'),
     nextPage: document.getElementById('next-page'),
@@ -62,8 +80,12 @@
 
   let searchTimer;
   let syncingScroll = false;
+  let cellResize = null;
+  let cellResizeFrame = null;
   let activeTooltipTarget = null;
   let tooltipHideTimer;
+  let tooltipShowTimer;
+  let pendingTooltipTarget = null;
   let activeDialogComparison = null;
   const comparisonTooltips = new WeakMap();
   const textDiffMatrixLimit = 1_000_000;
@@ -85,13 +107,19 @@
         message.textDiffGranularity,
         message.textDiffLayout,
         message.navigationUnit,
-        message.rowFilter
+        message.rowFilter,
+        message.focusChanges
       );
     } else if (message.type === 'page') {
-      receivePage(message.page);
+      if (message.requestId === state.requestId) { receivePage(message.page); }
     } else if (message.type === 'navigation') {
-      receiveNavigation(message.target);
-    } else if (message.type === 'error') {
+      if (message.requestId === state.navigationRequestId && message.pageRequestId === state.requestId) {
+        receiveNavigation(message.target);
+      }
+    } else if (message.type === 'error' && message.requestId === state.requestId) {
+      for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+        grid.removeAttribute('aria-busy');
+      }
       showError(message.message);
     }
   });
@@ -104,16 +132,18 @@
     textDiffGranularity,
     textDiffLayout,
     navigationUnit,
-    rowFilter
+    rowFilter,
+    focusChanges
   ) {
     state.summary = summary;
+    state.focusChanges = focusChanges === true;
     state.showUnchangedSheets = showUnchangedSheets;
     state.theme = theme === 'light' ? 'light' : 'dark';
     state.diffMode = diffMode === 'unified' ? 'unified' : 'sideBySide';
     state.textDiffGranularity = normalizeTextDiffGranularity(textDiffGranularity);
     state.textDiffLayout = normalizeTextDiffLayout(textDiffLayout);
     state.navigationUnit = navigationUnit === 'row' ? 'row' : 'cell';
-    state.filter = ['all', 'changed', 'added', 'removed'].includes(rowFilter) ? rowFilter : 'all';
+    state.filter = ['all', 'changed', 'modified', 'added', 'removed'].includes(rowFilter) ? rowFilter : 'all';
     const leftFileTooltip = formatFileTooltip(summary.left);
     const rightFileTooltip = formatFileTooltip(summary.right);
     elements.leftName.textContent = summary.left.name;
@@ -127,6 +157,9 @@
     setTooltip(elements.rightDetail, rightFileTooltip);
     setTooltip(elements.rightName.closest('.file-card'), rightFileTooltip);
     elements.search.value = state.query;
+    elements.freezeRows.value = state.freezeRows;
+    elements.freezeColumns.value = state.freezeColumns;
+    elements.focusChanges.checked = state.focusChanges;
     renderSummary();
     renderSheetSelector();
     applyTheme(state.theme);
@@ -151,34 +184,34 @@
       elements.sheetSelect.append(option);
       elements.sheetSelect.disabled = true;
       elements.emptyState.hidden = false;
+      elements.emptyTitle.textContent = 'No worksheets';
+      elements.emptyDetail.textContent = 'Neither workbook contains a worksheet to compare.';
     }
   }
 
   function renderSummary() {
     elements.summary.replaceChildren();
+    const columnCounts = { changed: 0, added: 0, removed: 0 };
+    for (const sheet of state.summary.sheets) {
+      for (const key of Object.keys(columnCounts)) { columnCounts[key] += sheet.columnChanges[key]; }
+    }
     const items = [
-      ['changed', state.summary.totals.rows.changed, 'Modified rows', state.summary.totals.cells.changed],
-      ['added', state.summary.totals.rows.added, 'Added rows', state.summary.totals.cells.added],
-      ['removed', state.summary.totals.rows.removed, 'Removed rows', state.summary.totals.cells.removed],
-      ['', state.summary.totals.sheets, 'Changed sheets', null]
+      ['Affected rows', state.summary.totals.rows],
+      ['Column structure', columnCounts],
+      ['Changed cells', state.summary.totals.cells]
     ];
-    for (const [className, value, label, cells] of items) {
+    for (const [label, counts] of items) {
       const item = document.createElement('div');
-      item.className = `summary-pill ${className}`;
+      item.className = 'summary-pill changed';
       const strong = document.createElement('strong');
-      strong.textContent = formatNumber(value);
+      strong.textContent = formatNumber(totalChanges(counts));
       const copy = document.createElement('div');
       const span = document.createElement('span');
       span.textContent = label;
-      copy.append(span);
-      if (cells !== null) {
-        const detail = document.createElement('em');
-        detail.textContent = `${formatNumber(cells)} cells`;
-        copy.append(detail);
-      }
-      setTooltip(item, cells === null
-        ? `${label}: ${formatNumber(value)}`
-        : `${label}: ${formatNumber(value)} rows · ${formatNumber(cells)} cells`);
+      const detail = document.createElement('em');
+      detail.textContent = `+${counts.added} / ~${counts.changed} / −${counts.removed}`;
+      copy.append(span, detail);
+      setTooltip(item, `${label}: ${counts.added} added · ${counts.changed} ${label === 'Column structure' ? 'renamed' : 'modified'} · ${counts.removed} removed`);
       item.append(strong, copy);
       elements.summary.append(item);
     }
@@ -217,6 +250,9 @@
       return;
     }
     state.sheet = name;
+    state.expandedRows = [];
+    state.expandedColumns = [];
+    state.autoSelectFilter = true;
     if (resetPage) {
       state.page = 0;
     }
@@ -226,6 +262,10 @@
     elements.sheetDimensions.textContent = changedRows
       ? `${formatNumber(sheet.rows)} × ${formatNumber(sheet.columns)} · ${formatNumber(changedRows)} changed ${pluralize('row', changedRows)} · ${formatNumber(changedCells)} cells`
       : `${formatNumber(sheet.rows)} × ${formatNumber(sheet.columns)} · unchanged`;
+    const structural = sheet.columnChanges;
+    if (totalChanges(structural)) {
+      elements.sheetDimensions.textContent += ` · columns +${structural.added} ~${structural.changed} −${structural.removed}`;
+    }
     setTooltip(elements.sheetDimensions, elements.sheetDimensions.textContent);
     setTooltip(
       elements.sheetSelect,
@@ -240,12 +280,19 @@
     if (!state.sheet) {
       return;
     }
+    hideTooltip();
     state.requestId += 1;
     elements.leftGrid.setAttribute('aria-busy', 'true');
     elements.rightGrid.setAttribute('aria-busy', 'true');
     elements.unifiedGrid.setAttribute('aria-busy', 'true');
     vscode.postMessage({
       type: 'requestPage',
+      requestId: state.requestId,
+      freezeRows: state.freezeRows,
+      freezeColumns: state.freezeColumns,
+      focusChanges: state.focusChanges,
+      expandedRows: state.expandedRows,
+      expandedColumns: state.expandedColumns,
       sheet: state.sheet,
       page: state.page,
       filter: state.filter,
@@ -261,8 +308,33 @@
     ) {
       return;
     }
+    if (state.autoSelectFilter) {
+      state.autoSelectFilter = false;
+      if (page.totalRows === 0 && !state.query.trim() && page.filterCounts.changed > 0) {
+        state.filter = page.filterCounts.modified === 0 && page.filterCounts.removed === 0 ? 'added'
+          : page.filterCounts.modified === 0 && page.filterCounts.added === 0 ? 'removed' : 'changed';
+        state.page = 0;
+        updateFilterButtons();
+        requestPage();
+        return;
+      }
+    }
     state.page = page.page;
     state.pageData = page;
+    updateFilterButtons(page.filterCounts);
+    elements.filterSummary.textContent = `${page.totalRows} matching rows · ${page.columns.length}/${page.totalColumns} columns`;
+    const hiddenColumns = page.totalColumns - page.columns.length;
+    if (hiddenColumns > 0) {
+      const showColumns = document.createElement('button');
+      showColumns.className = 'show-hidden-columns';
+      showColumns.textContent = `${hiddenColumns} columns hidden · Show all`;
+      showColumns.addEventListener('click', () => {
+        state.expandedColumns = Array.from({ length: page.totalColumns }, (_, index) => index);
+        clearInspector();
+        requestPage();
+      });
+      elements.filterSummary.append(' · ', showColumns);
+    }
     elements.leftGrid.removeAttribute('aria-busy');
     elements.rightGrid.removeAttribute('aria-busy');
     elements.unifiedGrid.removeAttribute('aria-busy');
@@ -272,6 +344,7 @@
   }
 
   function renderGrids(page) {
+    hideTooltip();
     if (state.diffMode === 'unified') {
       elements.leftGrid.replaceChildren();
       elements.rightGrid.replaceChildren();
@@ -281,27 +354,232 @@
       elements.leftGrid.replaceChildren(createTable(page, 'left'));
       elements.rightGrid.replaceChildren(createTable(page, 'right'));
     }
-    elements.emptyState.hidden = page.rows.length > 0;
+    renderEmptyState(page);
     elements.leftGrid.scrollTop = 0;
     elements.rightGrid.scrollTop = 0;
     elements.leftGrid.scrollLeft = 0;
     elements.rightGrid.scrollLeft = 0;
     elements.unifiedGrid.scrollTop = 0;
     elements.unifiedGrid.scrollLeft = 0;
-    const pendingTarget = state.pendingFocus;
-    const target = pendingTarget || state.selectedCell;
-    if (target && page.rows.some((row) => row.index === target.row)) {
-      if (target.unit === 'row') {
-        inspectRow(target.row, target.column, target.side);
-      } else {
-        inspectCell(target.row, target.column, target.side);
+    applyCellSizes();
+    applyFrozenPanes();
+    if (state.preserveScroll) {
+      [elements.leftGrid, elements.rightGrid, elements.unifiedGrid].forEach((grid, index) => {
+        grid.scrollTop = state.preserveScroll[index].top;
+        grid.scrollLeft = state.preserveScroll[index].left;
+      });
+      state.preserveScroll = null;
+    } else { focusSelectedCell(page); }
+  }
+
+  function renderEmptyState(page) {
+    const empty = page.rows.length === 0;
+    elements.emptyState.hidden = !empty;
+    elements.previousChange.disabled = empty;
+    elements.nextChange.disabled = empty;
+    if (!empty) { return; }
+    const sheet = state.summary.sheets.find((candidate) => candidate.name === page.sheet);
+    const hasChanges = sheet && sheet.status !== 'unchanged';
+    const searching = page.query.trim().length > 0;
+    const unchanged = sheet && !hasChanges && !searching && page.filter !== 'all';
+    elements.emptyState.classList.toggle('unchanged', Boolean(unchanged));
+    elements.emptyIcon.textContent = unchanged ? '✓' : '⌕';
+    const filterLabels = { modified: 'modified values', added: 'additions', removed: 'removals', changed: 'changes', all: 'rows' };
+    elements.emptyTitle.textContent = unchanged ? 'This worksheet has no changes'
+      : searching ? 'No results for this search and filter'
+      : page.filter === 'all' ? 'This worksheet has no rows'
+      : `No ${filterLabels[page.filter]} match this filter`;
+    const changes = [];
+    if (hasChanges) {
+      for (const [key, label] of [['added', 'added'], ['removed', 'removed'], ['changed', 'renamed']]) {
+        const count = sheet.columnChanges[key];
+        if (count) { changes.push(`${count} ${label} ${pluralize('column', count)}`); }
       }
-      const cell = document.querySelector(
-        `.diff-table td[data-row="${target.row}"][data-column="${target.column}"]`
-      );
-      cell?.scrollIntoView({ block: 'center', inline: 'center' });
-      state.pendingFocus = null;
+      for (const [key, label] of [['added', 'added'], ['removed', 'removed'], ['changed', 'modified']]) {
+        const count = sheet.cellChanges[key];
+        if (count) { changes.push(`${count} ${label} ${pluralize('cell', count)}`); }
+      }
+      if (!changes.length) { changes.push(`${totalChanges(sheet.rowChanges)} changed rows`); }
     }
+    const explanation = page.filter === 'modified' ? 'Modified only includes edits to existing values.'
+      : page.filter === 'added' ? 'Added includes new rows, columns, and cell values.'
+      : page.filter === 'removed' ? 'Removed includes deleted rows, columns, and cell values.' : '';
+    elements.emptyDetail.textContent = hasChanges
+      ? `This worksheet still has ${changes.join(' · ')}. ${searching ? 'Clear the search or change the filter.' : explanation}`
+      : unchanged ? 'The compared worksheet values are identical.'
+      : searching ? 'Clear the search or change the filter.' : 'There are no populated rows to display.';
+    elements.emptyShowChanges.hidden = !hasChanges;
+  }
+
+  function normalizeFreeze(value) {
+    return Number.isFinite(Number(value)) ? Math.max(0, Math.min(20, Math.trunc(Number(value)))) : 0;
+  }
+
+  function displayRows(page) {
+    const frozen = new Set(page.frozenRows.map((row) => row.index));
+    const rows = new Map([...page.contextRows, ...page.rows].map((row) => [row.index, row]));
+    return [...page.frozenRows, ...[...rows.values()].filter((row) => !frozen.has(row.index)).sort((a, b) => a.index - b.index)];
+  }
+
+  function matchesCellFilter(status) {
+    return state.filter === 'all' || state.filter === 'changed' || status === 'unchanged' ||
+      status === (state.filter === 'modified' ? 'changed' : state.filter);
+  }
+
+  function applyFrozenPanes() {
+    let limited = false;
+    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+      const table = grid.querySelector('table');
+      if (!table || grid.clientWidth === 0) { continue; }
+      for (const cell of table.querySelectorAll('.frozen-column')) {
+        cell.classList.remove('frozen-column');
+        cell.style.left = '';
+      }
+      const head = table.tHead;
+      let left = head.rows[0].cells[0].getBoundingClientRect().width;
+      let columnsFull = false;
+      for (const th of head.querySelectorAll('th[data-column]')) {
+        const column = Number(th.dataset.column);
+        if (column >= state.freezeColumns) { continue; }
+        const width = th.getBoundingClientRect().width;
+        if (columnsFull || left + width > grid.clientWidth - 80) {
+          columnsFull = true;
+          limited = true;
+          continue;
+        }
+        for (const cell of table.querySelectorAll(`[data-column="${column}"]`)) {
+          cell.classList.add('frozen-column');
+          cell.style.left = `${left}px`;
+        }
+        left += width;
+      }
+      let top = head.getBoundingClientRect().height;
+      let rowsFull = false;
+      for (const row of table.querySelectorAll('tbody tr[data-frozen-row]')) {
+        const height = row.getBoundingClientRect().height;
+        const fits = !rowsFull && top + height <= grid.clientHeight - 48;
+        row.classList.toggle('frozen-row', fits);
+        for (const cell of row.cells) { cell.style.top = fits ? `${top}px` : ''; }
+        if (fits) { top += height; }
+        else { rowsFull = true; limited = true; }
+      }
+      grid.style.scrollPaddingTop = `${top}px`;
+      grid.style.scrollPaddingLeft = `${left}px`;
+    }
+    elements.freezeNote.textContent = limited ? 'Freeze limited to visible pane size' : '';
+  }
+
+  function focusSelectedCell(page) {
+    const target = state.pendingFocus || state.selectedCell;
+    if (!target) { return; }
+    if (!displayRows(page).some((row) => row.index === target.row) ||
+      !page.columns.some((column) => column.index === target.column)) {
+      clearInspector();
+      return;
+    }
+    if (target.unit === 'row') {
+      inspectRow(target.row, target.column, target.side);
+    } else {
+      inspectCell(target.row, target.column, target.side);
+    }
+    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+      grid.querySelector(`td[data-row="${target.row}"][data-column="${target.column}"]`)
+        ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    state.pendingFocus = null;
+  }
+
+  function currentSizes() {
+    if (!Object.hasOwn(state.sheetSizes, state.sheet)) {
+      Object.defineProperty(state.sheetSizes, state.sheet, { value: { column: {}, row: {} }, enumerable: true, configurable: true, writable: true });
+    }
+    return state.sheetSizes[state.sheet];
+  }
+
+  function createResizeHandle(kind, index) {
+    const handle = document.createElement('span');
+    handle.className = `cell-resizer ${kind}-resizer`;
+    handle.dataset.resizeKind = kind;
+    handle.dataset.resizeIndex = String(index);
+    handle.tabIndex = 0;
+    handle.setAttribute('role', 'separator');
+    handle.setAttribute('aria-orientation', kind === 'column' ? 'vertical' : 'horizontal');
+    handle.setAttribute('aria-label', `Resize ${kind}; drag or use arrow keys, double-click to reset`);
+    return handle;
+  }
+
+  function applyCellSizes() {
+    const sizes = currentSizes();
+    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+      for (const cell of grid.querySelectorAll('[data-column]')) {
+        const width = sizes.column[cell.dataset.column];
+        for (const property of ['width', 'minWidth', 'maxWidth']) { cell.style[property] = width ? `${width}px` : ''; }
+      }
+      for (const row of grid.querySelectorAll('tbody tr[data-row]')) {
+        const height = sizes.row[row.dataset.row];
+        row.classList.toggle('user-sized-row', Boolean(height));
+        row.style.setProperty('--custom-row-height', height ? `${height}px` : 'var(--row-height)');
+        for (const cell of row.cells) { cell.style.height = height ? `${height}px` : ''; }
+      }
+    }
+  }
+
+  function updateCellSize(kind, index, size) {
+    currentSizes()[kind][index] = Math.round(Math.max(kind === 'column' ? 64 : 24, Math.min(kind === 'column' ? 1200 : 600, size)));
+    if (cellResizeFrame === null) {
+      cellResizeFrame = window.requestAnimationFrame(() => {
+        cellResizeFrame = null;
+        applyCellSizes();
+        applyFrozenPanes();
+      });
+    }
+  }
+
+  function expandRange(kind, start, end) {
+    const key = kind === 'rows' ? 'expandedRows' : 'expandedColumns';
+    const expanded = new Set(state[key]);
+    for (let index = start; index < Math.min(end, start + 50); index += 1) { expanded.add(index); }
+    state[key] = [...expanded];
+    state.preserveScroll = [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]
+      .map((grid) => ({ top: grid.scrollTop, left: grid.scrollLeft }));
+    clearInspector();
+    requestPage();
+  }
+
+  function gapButton(kind, start, end) {
+    const button = document.createElement('button');
+    button.className = 'expand-gap';
+    const count = end - start;
+    button.textContent = kind === 'columns' ? `+${count}` : `${count} ${kind} hidden · ${count > 50 ? 'Show next 50' : 'Expand'}`;
+    button.setAttribute('aria-label', `Expand ${kind} ${start + 1} through ${Math.min(end, start + 50)}`);
+    setTooltip(button, kind === 'rows'
+      ? 'Rows outside this filter or page. Expanding shows context without changing matching counts.'
+      : `${count} columns outside this focus hidden. Click to expand${count > 50 ? ' the next 50' : ''} and see their original values.`);
+    button.addEventListener('click', () => expandRange(kind, start, end));
+    return button;
+  }
+
+  function addCollapsedRanges(table, page) {
+    if ((!state.focusChanges && page.filter === 'all') || page.rows.length === 0) { return; }
+    const body = table.tBodies[0];
+    const displayed = [...body.rows];
+    let nextRow = 0;
+    const insertGap = (start, end, before) => {
+      if (end <= start) { return; }
+      const row = document.createElement('tr');
+      row.className = 'row-gap';
+      const cell = document.createElement('td');
+      cell.colSpan = table.tHead.rows[0].cells.length;
+      cell.append(gapButton('rows', start, end));
+      row.append(cell);
+      body.insertBefore(row, before);
+    };
+    for (const row of displayed) {
+      const index = Number(row.dataset.row);
+      insertGap(nextRow, index, row);
+      nextRow = index + 1;
+    }
+    insertGap(nextRow, page.sheetRows, null);
   }
 
   function createTable(page, side) {
@@ -315,20 +593,28 @@
     headRow.append(corner);
     for (const column of page.columns) {
       const th = document.createElement('th');
-      th.className = 'data-column';
-      th.textContent = column.label;
+      th.className = `data-column column-${columnHeaderStatus(column)}`;
+      th.dataset.column = String(column.index);
+      th.textContent = column[`${side}Label`] ?? '∅';
+      setTooltip(th, columnTooltip(column));
+      th.append(createResizeHandle('column', column.index));
       headRow.append(th);
     }
     head.append(headRow);
     table.append(head);
 
     const body = document.createElement('tbody');
-    for (const row of page.rows) {
+    for (const row of displayRows(page)) {
       const tr = document.createElement('tr');
+      tr.dataset.row = String(row.index);
+      if (!page.rows.some((match) => match.index === row.index)) { tr.classList.add('context-row'); }
+      if (page.frozenRows.some((frozen) => frozen.index === row.index)) { tr.dataset.frozenRow = 'true'; }
       const rowNumber = document.createElement('th');
       rowNumber.scope = 'row';
-      rowNumber.className = 'row-number';
-      rowNumber.textContent = String(row.index + 1);
+      rowNumber.className = `row-number row-${rowHeaderStatus(row)}`;
+      rowNumber.textContent = row[`${side}Index`] === undefined ? '∅' : String(row[`${side}Index`] + 1);
+      setTooltip(rowNumber, rowAddress(row));
+      rowNumber.append(createResizeHandle('row', row.index));
       tr.append(rowNumber);
 
       const cellValues = row[side];
@@ -336,11 +622,13 @@
         const value = cellValues[index];
         const status = row.cells[index] || 'unchanged';
         const cell = document.createElement('td');
-        cell.className = `data-column ${status}`;
+        const missingSide = row[`${side}Index`] === undefined || page.columns[index][`${side}Index`] === undefined;
+        cell.className = `data-column ${status}${missingSide ? ' missing-side' : ''}`;
+        if (!matchesCellFilter(status)) { cell.classList.add('filter-context'); }
         cell.dataset.row = String(row.index);
         cell.dataset.column = String(page.columns[index].index);
         cell.dataset.side = side;
-        setTooltip(cell, value ? describeCell(value) : '');
+        setCellTooltip(cell, page.columns[index], row, index);
 
         const content = document.createElement('div');
         content.className = 'cell-content';
@@ -365,6 +653,7 @@
       body.append(tr);
     }
     table.append(body);
+    addCollapsedRanges(table, page);
     return table;
   }
 
@@ -379,20 +668,30 @@
     headRow.append(corner);
     for (const column of page.columns) {
       const th = document.createElement('th');
-      th.className = 'data-column';
+      th.className = `data-column column-${columnHeaderStatus(column)}`;
+      th.dataset.column = String(column.index);
       th.textContent = column.label;
+      setTooltip(th, columnTooltip(column));
+      th.append(createResizeHandle('column', column.index));
       headRow.append(th);
     }
     head.append(headRow);
     table.append(head);
 
     const body = document.createElement('tbody');
-    for (const row of page.rows) {
+    for (const row of displayRows(page)) {
       const tr = document.createElement('tr');
+      tr.dataset.row = String(row.index);
+      if (!page.rows.some((match) => match.index === row.index)) { tr.classList.add('context-row'); }
+      if (page.frozenRows.some((frozen) => frozen.index === row.index)) { tr.dataset.frozenRow = 'true'; }
       const rowNumber = document.createElement('th');
       rowNumber.scope = 'row';
-      rowNumber.className = 'row-number';
-      rowNumber.textContent = String(row.index + 1);
+      rowNumber.className = `row-number row-${rowHeaderStatus(row)}`;
+      const beforeRow = row.leftIndex === undefined ? '∅' : String(row.leftIndex + 1);
+      const afterRow = row.rightIndex === undefined ? '∅' : String(row.rightIndex + 1);
+      rowNumber.textContent = beforeRow === afterRow ? beforeRow : `${beforeRow} → ${afterRow}`;
+      setTooltip(rowNumber, rowAddress(row));
+      rowNumber.append(createResizeHandle('row', row.index));
       tr.append(rowNumber);
 
       for (let index = 0; index < page.columns.length; index += 1) {
@@ -401,14 +700,11 @@
         const status = row.cells[index] || 'unchanged';
         const cell = document.createElement('td');
         cell.className = `data-column unified-cell ${status}`;
+        if (!matchesCellFilter(status)) { cell.classList.add('filter-context'); }
         cell.dataset.row = String(row.index);
         cell.dataset.column = String(page.columns[index].index);
         cell.dataset.side = 'unified';
-        setComparisonTooltip(cell, {
-          address: `${page.columns[index].label}${row.index + 1}`,
-          left: describeCell(left),
-          right: describeCell(right)
-        });
+        setCellTooltip(cell, page.columns[index], row, index);
 
         if (status === 'unchanged') {
           cell.append(createUnifiedValue(right || left, 'current-value', ''));
@@ -431,6 +727,7 @@
       body.append(tr);
     }
     table.append(body);
+    addCollapsedRanges(table, page);
     return table;
   }
 
@@ -497,14 +794,40 @@
     }
   }
 
-  function describeCell(cell) {
-    if (!cell) {
-      return '∅';
+  function describeCell(cell, includeType = false) {
+    if (!cell) { return '∅'; }
+    const details = [];
+    if (cell.raw !== undefined) { details.push(`raw: ${cell.raw}`); }
+    if (cell.formula) { details.push(cell.formula); }
+    if (includeType && cell.type) {
+      const names = { n: 'number', s: 'text', b: 'boolean', d: 'date', e: 'error', z: 'blank' };
+      details.push(`type: ${names[cell.type] || cell.type}`);
     }
-    if (cell.formula) {
-      return `${cell.display || '∅'}  [${cell.formula}]`;
+    const value = cell.display === '' ? '""' : cell.display;
+    return details.length ? `${value}  [${details.join(' · ')}]` : value;
+  }
+
+  function cellComparison(column, row, position) {
+    const left = row.left[position];
+    const right = row.right[position];
+    const includeType = left && right && left.type !== right.type;
+    return {
+      address: comparisonAddress(column, row),
+      left: describeCell(left, includeType),
+      right: describeCell(right, includeType)
+    };
+  }
+
+  function setCellTooltip(cell, column, row, position) {
+    const comparison = cellComparison(column, row, position);
+    if (row.cells[position] !== 'unchanged') {
+      setComparisonTooltip(cell, comparison);
+      return;
     }
-    return cell.display || '∅';
+    const value = row.right[position] || row.left[position];
+    if (!value) { return; }
+    setTooltip(cell, `${comparison.address}\n${describeCell(value)}`);
+    if (!value.formula && value.raw === undefined) { cell.dataset.tooltipOverflow = 'true'; }
   }
 
   function getCellComparison(rowIndex, columnIndex) {
@@ -512,16 +835,12 @@
     if (!page) {
       return null;
     }
-    const row = page.rows.find((candidate) => candidate.index === rowIndex);
+    const row = displayRows(page).find((candidate) => candidate.index === rowIndex);
     const columnPosition = page.columns.findIndex((column) => column.index === columnIndex);
     if (!row || columnPosition < 0) {
       return null;
     }
-    return {
-      address: `${encodeColumn(columnIndex)}${rowIndex + 1}`,
-      left: describeCell(row.left[columnPosition]),
-      right: describeCell(row.right[columnPosition])
-    };
+    return cellComparison(page.columns[columnPosition], row, columnPosition);
   }
 
   function openCellComparison(rowIndex, columnIndex) {
@@ -564,7 +883,7 @@
     if (!selected || !page) {
       return null;
     }
-    const row = page.rows.find((candidate) => candidate.index === selected.row);
+    const row = displayRows(page).find((candidate) => candidate.index === selected.row);
     const columnPosition = page.columns.findIndex((column) => column.index === selected.column);
     if (!row || columnPosition < 0) {
       return null;
@@ -617,8 +936,14 @@
   }
 
   function requestChange(direction) {
+    if (elements.leftGrid.hasAttribute('aria-busy')) { return; }
+    hideTooltip();
+    state.navigationRequestId += 1;
     vscode.postMessage({
       type: 'requestChange',
+      focusChanges: state.focusChanges,
+      requestId: state.navigationRequestId,
+      pageRequestId: state.requestId,
       sheet: state.sheet,
       row: state.selectedCell?.row,
       column: state.selectedCell?.column,
@@ -641,8 +966,14 @@
       side: state.selectedCell?.side || (state.diffMode === 'unified' ? 'unified' : 'right')
     };
     state.pendingFocus = state.selectedCell;
+    if (state.page !== target.page) { state.expandedRows = []; }
     state.page = target.page;
-    requestPage();
+    if (state.pageData?.page === target.page && state.pageData.sheet === state.sheet &&
+      state.pageData.filter === state.filter && state.pageData.query === state.query) {
+      focusSelectedCell(state.pageData);
+    } else {
+      requestPage();
+    }
   }
 
   function applyTheme(theme) {
@@ -720,18 +1051,31 @@
     state.navigationUnit = unit === 'row' ? 'row' : 'cell';
     elements.navigationUnitSelect.value = state.navigationUnit;
     const label = state.navigationUnit === 'row' ? 'changed row' : 'changed cell';
-    elements.previousChange.title = `Previous ${label}`;
-    elements.nextChange.title = `Next ${label}`;
+    setTooltip(elements.previousChange, `Previous ${label}`);
+    setTooltip(elements.nextChange, `Next ${label}`);
     persistState();
   }
 
-  function updateFilterButtons() {
+  function updateFilterButtons(counts) {
+    // Counts depend on the worksheet/search, not the active category. Keep them
+    // while switching filters so button widths and disabled styles stay stable.
+    if (!counts && state.pageData?.sheet === state.sheet && state.pageData.query === state.query) {
+      counts = state.pageData.filterCounts;
+    }
     for (const button of document.querySelectorAll('.filter')) {
-      button.classList.toggle('active', button.dataset.filter === state.filter);
+      const filter = button.dataset.filter;
+      button.classList.toggle('active', filter === state.filter);
+      button.setAttribute('aria-pressed', String(filter === state.filter));
+      const label = { all: 'All', changed: 'Changed', modified: 'Modified', added: 'Added', removed: 'Removed' }[filter];
+      button.textContent = counts ? `${label} (${counts[filter]})` : label;
+      button.disabled = Boolean(counts && counts[filter] === 0 && filter !== state.filter);
+      if (!button.dataset.baseTooltip) { button.dataset.baseTooltip = button.dataset.tooltip || label; }
+      setTooltip(button, button.dataset.baseTooltip + (counts ? ` · ${counts[filter]} matching rows` : ''));
     }
   }
 
   function clearInspector() {
+    hideTooltip();
     state.selectedCell = null;
     state.pendingFocus = null;
     elements.cellInspector.textContent = 'Select a cell to inspect its value and formula';
@@ -758,7 +1102,12 @@
       diffMode: state.diffMode,
       textDiffGranularity: state.textDiffGranularity,
       textDiffLayout: state.textDiffLayout,
-      navigationUnit: state.navigationUnit
+      navigationUnit: state.navigationUnit,
+      freezeRows: state.freezeRows,
+      freezeColumns: state.freezeColumns,
+      focusChanges: state.focusChanges,
+      focusPreferenceVersion: 2,
+      sheetSizes: state.sheetSizes
     });
   }
 
@@ -1098,6 +1447,23 @@
     return fragments;
   }
 
+  function scheduleTooltipShow(target, clientX) {
+    window.clearTimeout(tooltipHideTimer);
+    if (target === activeTooltipTarget || target === pendingTooltipTarget) { return; }
+    hideTooltip();
+    if (target.dataset.tooltipOverflow) {
+      const text = target.querySelector('.cell-content > span, .unified-value > span');
+      if (!text || text.scrollWidth <= text.clientWidth) { return; }
+    }
+    pendingTooltipTarget = target;
+    tooltipShowTimer = window.setTimeout(() => {
+      pendingTooltipTarget = null;
+      if (target.isConnected && (target.matches(':hover') || target.matches(':focus-visible'))) {
+        showTooltip(target, clientX);
+      }
+    }, 300);
+  }
+
   function showTooltip(target, clientX) {
     const content = target.dataset.tooltip;
     if (!content) {
@@ -1147,18 +1513,17 @@
 
   function hideTooltip() {
     window.clearTimeout(tooltipHideTimer);
+    window.clearTimeout(tooltipShowTimer);
+    pendingTooltipTarget = null;
     activeTooltipTarget = null;
     elements.hoverTooltip.hidden = true;
   }
 
   function scheduleTooltipHide() {
+    window.clearTimeout(tooltipShowTimer);
+    pendingTooltipTarget = null;
     window.clearTimeout(tooltipHideTimer);
-    tooltipHideTimer = window.setTimeout(() => {
-      if (activeTooltipTarget?.matches(':hover') || elements.hoverTooltip.matches(':hover')) {
-        return;
-      }
-      hideTooltip();
-    }, 500);
+    tooltipHideTimer = window.setTimeout(hideTooltip, 100);
   }
 
   function totalChanges(counts) {
@@ -1193,19 +1558,127 @@
     applySplitRatio();
   }
 
-  function encodeColumn(index) {
-    let result = '';
-    let value = index + 1;
-    while (value > 0) {
-      const remainder = (value - 1) % 26;
-      result = String.fromCharCode(65 + remainder) + result;
-      value = Math.floor((value - 1) / 26);
-    }
-    return result;
+  function comparisonAddress(column, row) {
+    const before = column.leftLabel === undefined || row.leftIndex === undefined ? '∅' : `${column.leftLabel}${row.leftIndex + 1}`;
+    const after = column.rightLabel === undefined || row.rightIndex === undefined ? '∅' : `${column.rightLabel}${row.rightIndex + 1}`;
+    return before === after ? before : `Before ${before} → After ${after}`;
   }
+
+  function columnHeaderStatus(column) {
+    return column.status === 'unchanged' && column.leftIndex !== column.rightIndex ? 'shifted' : column.status;
+  }
+
+  function rowHeaderStatus(row) {
+    return row.status === 'unchanged' && row.leftIndex !== row.rightIndex ? 'shifted' : row.status;
+  }
+
+  function rowAddress(row) {
+    const before = row.leftIndex === undefined ? '∅' : row.leftIndex + 1;
+    const after = row.rightIndex === undefined ? '∅' : row.rightIndex + 1;
+    const kind = row.status === 'added' ? 'Added row' : row.status === 'removed' ? 'Removed row'
+      : row.status === 'changed' ? 'Modified row' : before !== after ? 'Row position changed' : 'Row';
+    return `${kind} · Before: ${before} · After: ${after}`;
+  }
+
+  function columnTooltip(column) {
+    const label = column.status === 'added' ? 'Added column' : column.status === 'removed'
+      ? 'Removed column' : column.status === 'changed' ? 'Renamed column'
+      : column.leftIndex !== column.rightIndex ? 'Column position changed' : 'Column';
+    return `${label} · Before: ${column.leftLabel ?? '∅'} · After: ${column.rightLabel ?? '∅'}`;
+  }
+
+  elements.gridShell.addEventListener('pointerdown', (event) => {
+    const handle = event.target.closest?.('.cell-resizer');
+    if (!handle || event.button !== 0) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    hideTooltip();
+    const kind = handle.dataset.resizeKind;
+    const bounds = (kind === 'column' ? handle.parentElement : handle.closest('tr')).getBoundingClientRect();
+    cellResize = { handle, kind, index: Number(handle.dataset.resizeIndex),
+      origin: kind === 'column' ? event.clientX : event.clientY,
+      size: kind === 'column' ? bounds.width : bounds.height };
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add(`resizing-${kind}`);
+  });
+  elements.gridShell.addEventListener('pointermove', (event) => {
+    if (!cellResize) { return; }
+    const position = cellResize.kind === 'column' ? event.clientX : event.clientY;
+    updateCellSize(cellResize.kind, cellResize.index, cellResize.size + position - cellResize.origin);
+  });
+  const finishCellResize = (event) => {
+    if (!cellResize) { return; }
+    const handle = cellResize.handle;
+    cellResize = null;
+    if (handle.hasPointerCapture(event.pointerId)) { handle.releasePointerCapture(event.pointerId); }
+    document.body.classList.remove('resizing-column', 'resizing-row');
+    persistState();
+  };
+  elements.gridShell.addEventListener('pointerup', finishCellResize);
+  elements.gridShell.addEventListener('pointercancel', finishCellResize);
+  elements.gridShell.addEventListener('lostpointercapture', finishCellResize);
+  elements.gridShell.addEventListener('dblclick', (event) => {
+    const handle = event.target.closest?.('.cell-resizer');
+    if (!handle) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    delete currentSizes()[handle.dataset.resizeKind][handle.dataset.resizeIndex];
+    applyCellSizes();
+    applyFrozenPanes();
+    persistState();
+  });
+  elements.gridShell.addEventListener('keydown', (event) => {
+    const handle = event.target.closest?.('.cell-resizer');
+    if (!handle) { return; }
+    const kind = handle.dataset.resizeKind;
+    const keys = kind === 'column' ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown'];
+    if (!keys.includes(event.key)) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = (kind === 'column' ? handle.parentElement : handle.closest('tr')).getBoundingClientRect();
+    updateCellSize(kind, Number(handle.dataset.resizeIndex), (kind === 'column' ? bounds.width : bounds.height) + (event.key === keys[0] ? -10 : 10));
+    persistState();
+  });
+
+  for (const [element, key] of [[elements.freezeRows, 'freezeRows'], [elements.freezeColumns, 'freezeColumns']]) {
+    element.addEventListener('change', () => {
+      state[key] = normalizeFreeze(element.value);
+      element.value = state[key];
+      persistState();
+      requestPage();
+    });
+  }
+  elements.focusChanges.addEventListener('change', () => {
+    state.focusChanges = elements.focusChanges.checked;
+    vscode.postMessage({ type: 'updateSetting', key: 'focusChanges', value: state.focusChanges });
+    state.page = 0;
+    state.expandedRows = [];
+    state.expandedColumns = [];
+    clearInspector();
+    persistState();
+    requestPage();
+  });
+
+  elements.emptyShowChanges.addEventListener('click', () => {
+    state.expandedRows = [];
+    state.expandedColumns = [];
+    window.clearTimeout(searchTimer);
+    state.query = '';
+    elements.search.value = '';
+    state.filter = 'changed';
+    state.page = 0;
+    updateFilterButtons();
+    clearInspector();
+    vscode.postMessage({ type: 'updateSetting', key: 'rowFilter', value: state.filter });
+    requestPage();
+  });
 
   document.querySelectorAll('.filter').forEach((button) => {
     button.addEventListener('click', () => {
+      if (state.filter === button.dataset.filter) { return; }
+      state.autoSelectFilter = false;
+      state.expandedRows = [];
+      state.expandedColumns = [];
       state.filter = button.dataset.filter;
       state.page = 0;
       updateFilterButtons();
@@ -1222,6 +1695,7 @@
   elements.search.addEventListener('input', () => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => {
+      state.expandedRows = [];
       state.query = elements.search.value;
       state.page = 0;
       clearInspector();
@@ -1231,6 +1705,7 @@
 
   elements.previousPage.addEventListener('click', () => {
     if (state.page > 0) {
+      state.expandedRows = [];
       state.page -= 1;
       requestPage();
     }
@@ -1238,6 +1713,7 @@
 
   elements.nextPage.addEventListener('click', () => {
     if (state.pageData && state.page < state.pageData.totalPages - 1) {
+      state.expandedRows = [];
       state.page += 1;
       requestPage();
     }
@@ -1346,55 +1822,65 @@
     persistState();
   });
 
-  const splitResizeObserver = new ResizeObserver(() => applySplitRatio());
+  const splitResizeObserver = new ResizeObserver(() => { applySplitRatio(); applyFrozenPanes(); });
   splitResizeObserver.observe(elements.gridShell);
 
   document.addEventListener('pointerover', (event) => {
+    if (event.pointerType === 'touch' || event.buttons || elements.cellComparisonDialog.open) { return; }
+    if (elements.hoverTooltip.contains(event.target)) {
+      window.clearTimeout(tooltipHideTimer);
+      return;
+    }
     const target = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
     if (target) {
-      showTooltip(target, event.clientX);
-    } else if (elements.hoverTooltip.contains(event.target)) {
-      window.clearTimeout(tooltipHideTimer);
+      scheduleTooltipShow(target, event.clientX);
+    } else {
+      scheduleTooltipHide();
     }
   });
 
   document.addEventListener('pointerout', (event) => {
-    if (!activeTooltipTarget) {
-      return;
-    }
-    const source = event.target;
-    if (
-      !(source instanceof Node) ||
-      (!activeTooltipTarget.contains(source) && !elements.hoverTooltip.contains(source))
-    ) {
-      return;
-    }
+    const target = activeTooltipTarget || pendingTooltipTarget;
+    if (!target) { return; }
     const related = event.relatedTarget;
-    if (
-      !(related instanceof Node) ||
-      (!activeTooltipTarget.contains(related) && !elements.hoverTooltip.contains(related))
-    ) {
+    if (!(related instanceof Node)) {
+      hideTooltip();
+    } else if (!target.contains(related) && !elements.hoverTooltip.contains(related)) {
       scheduleTooltipHide();
     }
   });
 
   document.addEventListener('focusin', (event) => {
+    if (elements.hoverTooltip.contains(event.target)) {
+      window.clearTimeout(tooltipHideTimer);
+      return;
+    }
     const target = event.target instanceof Element ? event.target.closest('[data-tooltip]') : null;
-    if (target) {
-      showTooltip(target);
+    if (target?.matches(':focus-visible') && !elements.cellComparisonDialog.open) {
+      scheduleTooltipShow(target);
     }
   });
 
   document.addEventListener('focusout', (event) => {
-    if (activeTooltipTarget?.contains(event.target)) {
+    if (event.relatedTarget instanceof Node && elements.hoverTooltip.contains(event.relatedTarget)) { return; }
+    if (activeTooltipTarget?.contains(event.target) || pendingTooltipTarget?.contains(event.target) ||
+      elements.hoverTooltip.contains(event.target)) {
       scheduleTooltipHide();
     }
   });
 
-  elements.hoverTooltip.addEventListener('pointerenter', () => {
-    window.clearTimeout(tooltipHideTimer);
+  document.addEventListener('pointerdown', (event) => {
+    if (!elements.hoverTooltip.contains(event.target)) { hideTooltip(); }
   });
-  elements.hoverTooltip.addEventListener('pointerleave', () => scheduleTooltipHide());
+  document.addEventListener('scroll', (event) => {
+    if (!(event.target instanceof Node) || !elements.hoverTooltip.contains(event.target)) { hideTooltip(); }
+  }, true);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hideTooltip(); }
+  });
+  window.addEventListener('blur', hideTooltip);
+  window.addEventListener('resize', hideTooltip);
+  document.documentElement.addEventListener('pointerleave', hideTooltip);
 
   elements.leftGrid.addEventListener('scroll', () => synchronizeScroll(elements.leftGrid, elements.rightGrid));
   elements.rightGrid.addEventListener('scroll', () => synchronizeScroll(elements.rightGrid, elements.leftGrid));
@@ -1424,6 +1910,8 @@
   }
 
   window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { hideTooltip(); }
+    if (elements.cellComparisonDialog.open) { return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'f') {
       event.preventDefault();
       elements.search.focus();

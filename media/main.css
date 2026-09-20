@@ -445,7 +445,7 @@ button {
 
 .main {
   display: grid;
-  grid-template-rows: 46px 31px minmax(0, 1fr) 36px;
+  grid-template-rows: auto 31px minmax(0, 1fr) 36px;
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -454,25 +454,55 @@ button {
 }
 
 .toolbar {
-  justify-content: space-between;
+  display: grid;
   min-width: 0;
-  max-width: 100%;
-  gap: 12px;
-  padding: 0 9px;
-  overflow: hidden;
+  gap: 8px;
+  padding: 9px 11px;
   border-bottom: 1px solid var(--line-soft);
+}
+
+.toolbar-heading,
+.toolbar-actions,
+.toolbar-results {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 8px 16px;
 }
 
 .sheet-picker {
   min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
+  flex: 1 1 300px;
   gap: 6px;
 }
+
+.view-settings,
+.table-settings,
+.freeze-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.view-settings,
+.freeze-settings { flex-shrink: 0; }
+.table-settings { flex-wrap: wrap; gap: 8px 16px; }
+.toolbar-status {
+  display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.toolbar-status > :empty { display: none; }
 
 .sheet-icon {
   display: grid;
   width: 25px;
+  flex: 0 0 25px;
   height: 25px;
   place-items: center;
   border-radius: 6px;
@@ -491,8 +521,9 @@ button {
 
 .sheet-picker select {
   min-width: 120px;
-  flex: 0 1 320px;
-  width: min(320px, 32vw);
+  flex: 1 1 280px;
+  width: 100%;
+  max-width: 420px;
   height: 30px;
   padding: 0 25px 0 8px;
   overflow: hidden;
@@ -515,12 +546,6 @@ button {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.toolbar-actions {
-  min-width: 0;
-  flex: 0 1 auto;
-  gap: 9px;
 }
 
 .view-setting {
@@ -562,9 +587,9 @@ button {
 
 .search-box {
   display: flex;
-  min-width: 120px;
-  flex: 1 1 190px;
-  width: min(250px, 27vw);
+  min-width: 0;
+  flex: 1 1 260px;
+  width: 100%;
   height: 30px;
   align-items: center;
   gap: 7px;
@@ -581,6 +606,7 @@ button {
 .search-box input {
   min-width: 0;
   flex: 1;
+  width: 0;
   border: 0;
   outline: 0;
   background: transparent;
@@ -599,7 +625,10 @@ button {
 
 .segmented {
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+  flex: 0 1 auto;
+  gap: 2px;
   padding: 2px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -607,6 +636,9 @@ button {
 }
 
 .segmented button {
+  white-space: nowrap;
+  flex: 1 0 auto;
+  min-height: 26px;
   padding: 4px 7px;
   border: 0;
   border-radius: 5px;
@@ -807,6 +839,26 @@ button {
   max-width: var(--cell-width);
 }
 
+.diff-table thead .column-added { color: var(--added); }
+.diff-table thead .column-removed { color: var(--removed); }
+.diff-table thead .column-changed,
+.diff-table thead .column-shifted { color: var(--changed); }
+
+.diff-table .row-number.row-added { color: var(--added); }
+.diff-table .row-number.row-removed { color: var(--removed); }
+.diff-table .row-number.row-changed,
+.diff-table .row-number.row-shifted { color: var(--changed); }
+
+.unified-table .row-number {
+  width: 100px;
+  min-width: 100px;
+  max-width: 100px;
+}
+
+.grid-scroll[aria-busy="true"] {
+  pointer-events: none;
+}
+
 .diff-table td {
   position: relative;
   cursor: default;
@@ -840,6 +892,12 @@ button {
 .right-pane .diff-table td.added,
 .right-pane .diff-table td.removed {
   background: var(--added-soft);
+}
+
+.left-pane .diff-table td.missing-side,
+.right-pane .diff-table td.missing-side {
+  background: repeating-linear-gradient(135deg, var(--panel) 0 5px, var(--line-soft) 5px 6px);
+  box-shadow: none;
 }
 
 .left-pane .diff-table td.changed {
@@ -944,9 +1002,28 @@ button {
   place-items: center;
   margin-bottom: 4px;
   border-radius: 50%;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 20px;
+}
+
+.empty-state.unchanged .empty-icon {
   background: var(--added-soft);
   color: var(--added);
-  font-size: 20px;
+}
+
+.empty-state > span {
+  max-width: min(620px, 85%);
+  line-height: 1.6;
+  text-align: center;
+}
+
+.empty-state button {
+  margin-top: 10px;
+}
+
+.empty-state button[hidden] {
+  display: none;
 }
 
 .empty-state strong {
@@ -1454,47 +1531,9 @@ button {
   }
 }
 
-@media (max-width: 1350px) {
-  .sheet-dimensions {
-    display: none;
-  }
-
-  .view-setting {
-    padding-left: 2px;
-  }
-
-  .view-setting > span {
-    display: none;
-  }
-
-  .search-box {
-    width: min(190px, 22vw);
-  }
-}
-
 @media (max-width: 1080px) {
   .main {
     grid-template-rows: auto 31px minmax(0, 1fr) 36px;
-  }
-
-  .toolbar {
-    min-height: 46px;
-    flex-wrap: wrap;
-    padding-block: 7px;
-  }
-
-  .sheet-picker,
-  .toolbar-actions {
-    width: 100%;
-    flex-basis: 100%;
-  }
-
-  .toolbar-actions {
-    justify-content: flex-end;
-  }
-
-  .segmented button {
-    padding-inline: 6px;
   }
 
   .legend {
@@ -1519,31 +1558,9 @@ button {
     width: 50%;
   }
 
-  .toolbar {
-    gap: 8px;
-  }
-
-  .toolbar-actions {
-    flex-wrap: wrap;
-    justify-content: flex-start;
-  }
-
-  .search-box {
-    width: 150px;
-  }
-
-  .sheet-picker label,
-  .sheet-dimensions {
-    display: none;
-  }
-
-  .sheet-picker select {
-    width: min(260px, 38vw);
-  }
-
-  .segmented button {
-    padding-inline: 5px;
-  }
+  .sheet-dimensions { display: none; }
+  .toolbar-status { justify-content: flex-start; }
+  .toolbar-results .segmented { flex: 1 1 100%; }
 
   .cell-comparison-dialog-title > span,
   .cell-comparison-dialog-actions .text-diff-control > span {
@@ -1563,4 +1580,170 @@ button {
     border-top: 1px solid var(--line);
     border-left: 0;
   }
+}
+
+.freeze-setting,
+.focus-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.freeze-setting input {
+  width: 48px;
+  height: 27px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.focus-setting input { accent-color: var(--accent); }
+.filter-summary { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.filter:disabled { opacity: 0.4; cursor: default; }
+
+.diff-table td.filter-context,
+.diff-table td.filter-context .before-value,
+.diff-table td.filter-context .after-value {
+  color: var(--muted);
+  background: var(--panel);
+  box-shadow: none;
+}
+
+.diff-table td.frozen-column,
+.diff-table .frozen-row > td,
+.diff-table .frozen-row > th {
+  position: sticky;
+  background: var(--panel);
+}
+
+.diff-table td.frozen-column { z-index: 3; }
+.diff-table .frozen-row > td { z-index: 4; }
+.diff-table .frozen-row > th.row-number,
+.diff-table .frozen-row > td.frozen-column { z-index: 5; }
+.diff-table thead th { z-index: 6; }
+.diff-table thead th.frozen-column { z-index: 7; }
+.diff-table thead .row-number { z-index: 8; }
+
+.diff-table td.frozen-column,
+.diff-table .frozen-row > * { border-color: var(--line); }
+
+.diff-table td.frozen-column.changed,
+.diff-table .frozen-row > td.changed {
+  background: color-mix(in srgb, var(--changed) 16%, var(--panel));
+}
+
+.left-pane .diff-table td.frozen-column.added,
+.left-pane .diff-table td.frozen-column.removed,
+.left-pane .diff-table .frozen-row > td.added,
+.left-pane .diff-table .frozen-row > td.removed,
+.unified-table td.frozen-column.removed,
+.unified-table .frozen-row > td.removed {
+  background: color-mix(in srgb, var(--removed) 16%, var(--panel));
+}
+
+.right-pane .diff-table td.frozen-column.added,
+.right-pane .diff-table td.frozen-column.removed,
+.right-pane .diff-table .frozen-row > td.added,
+.right-pane .diff-table .frozen-row > td.removed,
+.unified-table td.frozen-column.added,
+.unified-table .frozen-row > td.added {
+  background: color-mix(in srgb, var(--added) 16%, var(--panel));
+}
+
+.left-pane .diff-table td.missing-side,
+.right-pane .diff-table td.missing-side,
+.left-pane .diff-table td.missing-side.frozen-column,
+.right-pane .diff-table td.missing-side.frozen-column,
+.left-pane .diff-table .frozen-row > td.missing-side,
+.right-pane .diff-table .frozen-row > td.missing-side {
+  background: repeating-linear-gradient(135deg, var(--panel) 0 5px, var(--line-soft) 5px 6px);
+}
+
+.diff-table td.filter-context.frozen-column,
+.diff-table .frozen-row > td.filter-context {
+  background: var(--panel);
+}
+
+.diff-table { min-width: 0; }
+
+.diff-table .row-gap > td {
+  height: 30px;
+  background: var(--panel-strong);
+  border-block: 1px dashed var(--line);
+}
+
+.expand-gap {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.show-hidden-columns {
+  border: 0;
+  padding: 2px 4px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.row-gap .expand-gap { position: sticky; left: 8px; }
+.context-row > .row-number { font-style: italic; }
+
+.cell-resizer {
+  position: absolute;
+  z-index: 10;
+  display: block;
+  touch-action: none;
+}
+
+.column-resizer {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.row-resizer {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.cell-resizer:hover,
+.cell-resizer:focus-visible { background: var(--accent); opacity: 0.6; }
+body.resizing-column, body.resizing-column * { cursor: col-resize !important; user-select: none !important; }
+body.resizing-row, body.resizing-row * { cursor: row-resize !important; user-select: none !important; }
+
+.diff-table .user-sized-row > td { max-height: var(--custom-row-height); }
+.user-sized-row .cell-content { max-height: calc(var(--custom-row-height) - 8px); overflow: hidden; align-items: flex-start; }
+.user-sized-row .cell-content > span:first-child,
+.user-sized-row .unified-value > span:not(.change-marker):not(.formula-mark) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.user-sized-row .unified-value { min-height: 0; max-height: calc((var(--custom-row-height) - 8px) / 2); }
+
+@media (max-width: 480px) {
+  .toolbar { padding: 8px; }
+  .sheet-picker { flex-basis: 100%; }
+  .sheet-picker label { display: none; }
+  .sheet-picker select { max-width: none; }
+  .view-settings { width: 100%; }
+  .view-setting { flex: 1; min-width: 0; }
+  .view-setting select { flex: 1; min-width: 0; }
+  .table-settings { flex: 1 1 100%; justify-content: space-between; }
+  .toolbar-results .segmented { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .segmented button { padding-inline: 3px; }
 }

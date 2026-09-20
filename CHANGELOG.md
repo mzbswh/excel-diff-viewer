@@ -2,6 +2,16 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.1.0 - 2026-09-20
+
+- Align inserted/deleted columns and rows using reliable headers, unique IDs, and shared content, avoiding cascading false modifications. Preserve renamed headers and original Before/After addresses.
+- Separate row, column-structure, and cell-change summaries. Add Modified filtering, and include column/cell additions and removals in Added/Removed filters.
+- Add Focus changes with selection remembered across comparisons. Show only relevant rows/columns, preserve headers and explicitly frozen regions, and retain all fields for whole-row changes. Hidden columns can be restored with Show all; row context expands on demand.
+- Add configurable frozen rows and columns across pages, with pane-size limits.
+- Add draggable column widths and row heights, synchronized between panes and remembered per worksheet, with double-click reset and keyboard adjustment.
+- Group toolbar controls for responsive layouts, keep freeze controls together, and prevent filter counts and disabled states from flashing during selection.
+- Improve hover preview timing and dismissal, explain type/precision differences, preserve original addresses in navigation/search, and ignore stale replies when switching views.
+
 ## 1.0.4 - 2026-09-02
 
 - Added character-, word-, and line-level text differences to cell comparison previews and dialogs.

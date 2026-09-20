@@ -6,6 +6,12 @@ type TextDiffLayout = 'sideBySide' | 'inline' | 'stacked';
 
 interface RequestPageMessage {
   type: 'requestPage';
+  requestId: number;
+  freezeRows?: number;
+  freezeColumns?: number;
+  focusChanges?: boolean;
+  expandedRows?: number[];
+  expandedColumns?: number[];
   sheet: string;
   page: number;
   filter: RowFilter;
@@ -21,7 +27,10 @@ interface OpenLocalFileMessage {
 }
 
 interface RequestChangeMessage {
+  focusChanges?: boolean;
   type: 'requestChange';
+  requestId: number;
+  pageRequestId: number;
   sheet: string;
   row?: number;
   column?: number;
@@ -39,8 +48,9 @@ interface UpdateSettingMessage {
     | 'textDiffGranularity'
     | 'textDiffLayout'
     | 'navigationUnit'
-    | 'rowFilter';
-  value: string;
+    | 'rowFilter'
+    | 'focusChanges';
+  value: string | boolean;
 }
 
 type WebviewMessage =
@@ -118,7 +128,8 @@ export class ExcelDiffPanel {
         ),
         textDiffLayout: configuration.get<TextDiffLayout>('textDiffLayout', 'sideBySide'),
         navigationUnit: configuration.get<'cell' | 'row'>('navigationUnit', 'cell'),
-        rowFilter: configuration.get<RowFilter>('rowFilter', 'all')
+        rowFilter: configuration.get<RowFilter>('rowFilter', 'all'),
+        focusChanges: configuration.get<boolean>('focusChanges', false)
       });
       return;
     }
@@ -148,12 +159,20 @@ export class ExcelDiffPanel {
           message.page,
           this.pageSize,
           isRowFilter(message.filter) ? message.filter : 'all',
-          typeof message.query === 'string' ? message.query : ''
+          typeof message.query === 'string' ? message.query : '',
+          {
+            freezeRows: Number.isFinite(message.freezeRows) ? message.freezeRows : 0,
+            freezeColumns: Number.isFinite(message.freezeColumns) ? message.freezeColumns : 0,
+            focusChanges: message.focusChanges === true,
+            expandedRows: Array.isArray(message.expandedRows) ? message.expandedRows.filter(Number.isInteger) : [],
+            expandedColumns: Array.isArray(message.expandedColumns) ? message.expandedColumns.filter(Number.isInteger) : []
+          }
         );
-        await this.panel.webview.postMessage({ type: 'page', page });
+        await this.panel.webview.postMessage({ type: 'page', page, requestId: message.requestId });
       } catch (error) {
         await this.panel.webview.postMessage({
           type: 'error',
+          requestId: message.requestId,
           message: error instanceof Error ? error.message : String(error)
         });
       }
@@ -168,13 +187,15 @@ export class ExcelDiffPanel {
         message.unit === 'row' ? 'row' : 'cell',
         this.pageSize,
         isRowFilter(message.filter) ? message.filter : 'all',
-        typeof message.query === 'string' ? message.query : ''
+        typeof message.query === 'string' ? message.query : '',
+        message.focusChanges === true
       );
-      await this.panel.webview.postMessage({ type: 'navigation', target });
+      await this.panel.webview.postMessage({ type: 'navigation', target, requestId: message.requestId, pageRequestId: message.pageRequestId });
       return;
     }
     if (message.type === 'updateSetting') {
-      const allowed = message.key === 'theme'
+      const allowed = message.key === 'focusChanges' ? typeof message.value === 'boolean'
+        : typeof message.value === 'string' && (message.key === 'theme'
         ? message.value === 'dark' || message.value === 'light'
         : message.key === 'diffMode'
           ? message.value === 'sideBySide' || message.value === 'unified'
@@ -184,7 +205,7 @@ export class ExcelDiffPanel {
               ? isTextDiffLayout(message.value)
               : message.key === 'navigationUnit'
                 ? message.value === 'cell' || message.value === 'row'
-                : isRowFilter(message.value);
+                : isRowFilter(message.value));
       if (allowed) {
         await vscode.workspace
           .getConfiguration('excelDiffViewer')
@@ -244,37 +265,61 @@ export class ExcelDiffPanel {
     <div class="workspace">
       <main class="main">
         <div class="toolbar">
-          <div class="sheet-picker">
-            <span class="sheet-icon">▦</span>
-            <label for="sheet-select">Worksheet</label>
-            <select id="sheet-select" aria-label="Select worksheet"></select>
-            <span id="sheet-dimensions" class="sheet-dimensions"></span>
+          <div class="toolbar-heading">
+            <div class="sheet-picker">
+              <span class="sheet-icon">▦</span>
+              <label for="sheet-select">Worksheet</label>
+              <select id="sheet-select" aria-label="Select worksheet"></select>
+              <span id="sheet-dimensions" class="sheet-dimensions"></span>
+            </div>
+            <div class="view-settings">
+              <label class="view-setting">
+                <span>Theme</span>
+                <select id="theme-select" aria-label="Color theme">
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </label>
+              <label class="view-setting">
+                <span>View</span>
+                <select id="diff-mode-select" aria-label="Diff display mode">
+                  <option value="sideBySide">Side by side</option>
+                  <option value="unified">Single page</option>
+                </select>
+              </label>
+            </div>
           </div>
           <div class="toolbar-actions">
-            <label class="view-setting">
-              <span>Theme</span>
-              <select id="theme-select" aria-label="Color theme">
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
-            </label>
-            <label class="view-setting">
-              <span>View</span>
-              <select id="diff-mode-select" aria-label="Diff display mode">
-                <option value="sideBySide">Side by side</option>
-                <option value="unified">Single page</option>
-              </select>
-            </label>
             <label class="search-box">
               <span aria-hidden="true">⌕</span>
               <input id="search" type="search" placeholder="Search this worksheet" autocomplete="off">
               <kbd>⌘F</kbd>
             </label>
-            <div class="segmented" role="group" aria-label="Row filter">
+            <div class="table-settings">
+              <label class="focus-setting" data-tooltip="Show only records and fields involved in the selected changes. Whole-row additions/removals keep all fields; frozen columns stay visible.">
+                <input id="focus-changes" type="checkbox"> Focus changes
+              </label>
+              <div class="freeze-settings" role="group" aria-label="Freeze panes">
+                <label class="freeze-setting">Freeze rows
+                  <input id="freeze-rows" type="number" min="0" max="20" step="1" value="0" aria-label="Freeze first rows" title="Keep the first N aligned worksheet rows visible across pages">
+                </label>
+                <label class="freeze-setting">Cols
+                  <input id="freeze-columns" type="number" min="0" max="20" step="1" value="0" aria-label="Freeze first columns" title="Keep the first N aligned worksheet columns visible">
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar-results">
+            <div class="segmented" role="group" aria-label="Difference filter">
               <button class="filter active" data-filter="all">All</button>
-              <button class="filter" data-filter="changed">Changed</button>
-              <button class="filter" data-filter="added">Added</button>
-              <button class="filter" data-filter="removed">Removed</button>
+              <button class="filter" data-filter="changed" data-tooltip="Rows containing any difference">Changed</button>
+              <button class="filter" data-filter="modified" data-tooltip="Only rows with modified values; skip added or removed cells during navigation">Modified</button>
+              <button class="filter" data-filter="added" data-tooltip="Rows containing additions, including added columns and newly filled cells">Added</button>
+              <button class="filter" data-filter="removed" data-tooltip="Rows containing removals, including deleted columns and cleared cells">Removed</button>
+            </div>
+            <div class="toolbar-status">
+              <span id="filter-summary" class="filter-summary" aria-live="polite" data-tooltip="Counts show matching rows; retained header and frozen rows are context"></span>
+              <span id="freeze-note" class="filter-summary" aria-live="polite"></span>
             </div>
           </div>
         </div>
@@ -308,9 +353,10 @@ export class ExcelDiffPanel {
             <div id="unified-grid" class="grid-scroll"></div>
           </section>
           <div id="empty-state" class="empty-state" hidden>
-            <div class="empty-icon">✓</div>
-            <strong>No rows match this view</strong>
-            <span>Try another filter or search term.</span>
+            <div id="empty-icon" class="empty-icon" aria-hidden="true">⌕</div>
+            <strong id="empty-title">No rows match this view</strong>
+            <span id="empty-detail">Try another filter or search term.</span>
+            <button id="empty-show-changes" class="page-button" hidden>Show all changes</button>
           </div>
         </div>
 
@@ -374,7 +420,7 @@ export class ExcelDiffPanel {
 }
 
 function isRowFilter(value: string): value is RowFilter {
-  return value === 'all' || value === 'changed' || value === 'added' || value === 'removed';
+  return value === 'all' || value === 'changed' || value === 'modified' || value === 'added' || value === 'removed';
 }
 
 function isTextDiffGranularity(value: string): value is TextDiffGranularity {
