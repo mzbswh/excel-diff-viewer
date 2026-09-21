@@ -115,11 +115,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     interceptedAutoDiffTabs.add(tab);
 
-    const closeOriginalDiff = vscode.window.tabGroups.close(tab, true);
-    void Promise.allSettled([
-      closeOriginalDiff,
-      openComparison(context, input.original, input.modified, false)
-    ]);
+    void openComparison(context, input.original, input.modified, false, tab);
   };
 
   context.subscriptions.push(
@@ -185,7 +181,8 @@ async function openComparison(
   context: vscode.ExtensionContext,
   left: vscode.Uri,
   right: vscode.Uri,
-  showProgress: boolean
+  showProgress: boolean,
+  originalTab?: vscode.Tab
 ): Promise<boolean> {
   const buildComparison = async (): Promise<WorkbookComparison> => {
     const ignoreWhitespace = vscode.workspace
@@ -194,7 +191,18 @@ async function openComparison(
     return WorkbookComparison.create(left, right, ignoreWhitespace);
   };
 
+  let panel: ExcelDiffPanel | undefined;
   try {
+    panel = ExcelDiffPanel.show(
+      context,
+      `Excel Diff · ${resourceName(right)}`,
+      originalTab?.group.viewColumn
+    );
+    // Install the replacement before closing the native diff, so the editor
+    // does not fall back to an unrelated tab while the workbooks are loading.
+    if (originalTab) {
+      void vscode.window.tabGroups.close(originalTab, true).then(undefined, () => {});
+    }
     const comparison = showProgress
       ? await vscode.window.withProgress(
           {
@@ -204,10 +212,11 @@ async function openComparison(
           buildComparison
         )
       : await buildComparison();
-    ExcelDiffPanel.show(context, comparison, `Excel Diff · ${resourceName(right)}`);
+    await panel.setComparison(comparison);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    await panel?.showLoadError(message);
     await vscode.window.showErrorMessage(`Excel comparison failed: ${message}`);
     return false;
   }

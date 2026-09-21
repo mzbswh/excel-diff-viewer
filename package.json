@@ -2,7 +2,7 @@
   "name": "excel-diff-viewer",
   "displayName": "Excel Diff Viewer",
   "description": "A modern side-by-side Excel workbook diff viewer for Visual Studio Code.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "mzbswh",
   "author": {
     "name": "mzbswh"

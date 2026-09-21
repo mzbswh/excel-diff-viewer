@@ -62,14 +62,15 @@ type WebviewMessage =
 
 export class ExcelDiffPanel {
   private disposed = false;
+  private ready = false;
+  private comparison?: WorkbookComparison;
+  private loadError?: string;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
-    private readonly comparison: WorkbookComparison,
     private readonly extensionUri: vscode.Uri,
     private readonly pageSize: number
   ) {
-    panel.webview.html = this.renderHtml(panel.webview);
     panel.webview.onDidReceiveMessage(
       (message: WebviewMessage) => this.onMessage(message),
       undefined,
@@ -78,17 +79,18 @@ export class ExcelDiffPanel {
     panel.onDidDispose(() => {
       this.disposed = true;
     });
+    panel.webview.html = this.renderHtml(panel.webview);
   }
 
   static show(
     context: vscode.ExtensionContext,
-    comparison: WorkbookComparison,
-    title: string
+    title: string,
+    viewColumn = vscode.ViewColumn.Active
   ): ExcelDiffPanel {
     const panel = vscode.window.createWebviewPanel(
       'excelDiffViewer.diff',
       title,
-      vscode.ViewColumn.Active,
+      viewColumn,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -104,10 +106,41 @@ export class ExcelDiffPanel {
       .get<number>('pageSize', 200);
     return new ExcelDiffPanel(
       panel,
-      comparison,
       context.extensionUri,
       Math.max(50, Math.min(1000, configuredPageSize))
     );
+  }
+
+  async setComparison(comparison: WorkbookComparison): Promise<void> {
+    this.comparison = comparison;
+    await this.initialize();
+  }
+
+  async showLoadError(message: string): Promise<void> {
+    this.loadError = message;
+    await this.initialize();
+  }
+
+  private async initialize(): Promise<void> {
+    if (this.disposed || !this.ready) { return; }
+    if (this.loadError) {
+      await this.panel.webview.postMessage({ type: 'loadError', message: this.loadError });
+      return;
+    }
+    if (!this.comparison) { return; }
+    const configuration = vscode.workspace.getConfiguration('excelDiffViewer');
+    await this.panel.webview.postMessage({
+      type: 'initialize',
+      summary: this.comparison.summary,
+      showUnchangedSheets: configuration.get<boolean>('showUnchangedSheets', true),
+      theme: configuration.get<'dark' | 'light'>('theme', 'dark'),
+      diffMode: configuration.get<'sideBySide' | 'unified'>('diffMode', 'sideBySide'),
+      textDiffGranularity: configuration.get<TextDiffGranularity>('textDiffGranularity', 'character'),
+      textDiffLayout: configuration.get<TextDiffLayout>('textDiffLayout', 'sideBySide'),
+      navigationUnit: configuration.get<'cell' | 'row'>('navigationUnit', 'cell'),
+      rowFilter: configuration.get<RowFilter>('rowFilter', 'all'),
+      focusChanges: configuration.get<boolean>('focusChanges', false)
+    });
   }
 
   private async onMessage(message: WebviewMessage): Promise<void> {
@@ -115,24 +148,11 @@ export class ExcelDiffPanel {
       return;
     }
     if (message.type === 'ready') {
-      const configuration = vscode.workspace.getConfiguration('excelDiffViewer');
-      await this.panel.webview.postMessage({
-        type: 'initialize',
-        summary: this.comparison.summary,
-        showUnchangedSheets: configuration.get<boolean>('showUnchangedSheets', true),
-        theme: configuration.get<'dark' | 'light'>('theme', 'dark'),
-        diffMode: configuration.get<'sideBySide' | 'unified'>('diffMode', 'sideBySide'),
-        textDiffGranularity: configuration.get<TextDiffGranularity>(
-          'textDiffGranularity',
-          'character'
-        ),
-        textDiffLayout: configuration.get<TextDiffLayout>('textDiffLayout', 'sideBySide'),
-        navigationUnit: configuration.get<'cell' | 'row'>('navigationUnit', 'cell'),
-        rowFilter: configuration.get<RowFilter>('rowFilter', 'all'),
-        focusChanges: configuration.get<boolean>('focusChanges', false)
-      });
+      this.ready = true;
+      await this.initialize();
       return;
     }
+    if (!this.comparison) { return; }
     if (message.type === 'openLocalFile') {
       const localUri = await findLocalWorkbookUri(
         this.comparison.summary.right.uri,
@@ -215,6 +235,8 @@ export class ExcelDiffPanel {
   }
 
   private renderHtml(webview: vscode.Webview): string {
+    const theme = vscode.workspace.getConfiguration('excelDiffViewer').get<string>('theme') === 'light'
+      ? 'light' : 'dark';
     const nonce = createNonce();
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.js'));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.css'));
@@ -226,7 +248,7 @@ export class ExcelDiffPanel {
     ].join('; ');
 
     return /* html */ `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="${theme}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">

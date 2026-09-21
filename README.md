@@ -21,6 +21,8 @@ Excel Diff Viewer reads workbook versions exposed by Visual Studio Code Source C
 
 ### Visual Studio Marketplace
 
+[Open Excel Diff Viewer in the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=mzbswh.excel-diff-viewer).
+
 1. Open the Extensions view in Visual Studio Code.
 2. Search for **Excel Diff Viewer**.
 3. Select **Install**.
@@ -29,17 +31,17 @@ You can also install it from the Command Palette with **Extensions: Install Exte
 
 ### VSIX package
 
-Download the `.vsix` file from the matching [GitHub Release](https://github.com/mzbswh/excel-diff-viewer/releases), then run:
+Download the `.vsix` file from the [latest GitHub Release](https://github.com/mzbswh/excel-diff-viewer/releases/latest), then run:
 
 ```bash
-code --install-extension excel-diff-viewer-1.0.2.vsix
+code --install-extension excel-diff-viewer-1.1.1.vsix
 ```
 
 ## Usage
 
 ### Compare a Git or SCM change
 
-Open an Excel change from the Source Control view. When both sides resolve to supported Excel workbooks, Excel Diff Viewer captures both URIs, immediately closes the original binary diff tab, and opens its workbook-aware view.
+Open an Excel change from the Source Control view. When both sides resolve to supported Excel workbooks, Excel Diff Viewer captures both URIs and opens its loading view in the same editor group before closing the original binary diff tab. The viewer loads and compares the workbooks while the page initializes, using the configured theme from the first render.
 
 When automatic takeover is enabled, Excel Diff Viewer adds explicit Excel entries to the profile's `workbench.diffEditorAssociations`. This makes Excel diff tabs use VS Code's default diff editor before takeover. Existing explicit Excel diff associations are preserved. Regular workbook tabs continue to use the viewer selected in `workbench.editorAssociations`.
 

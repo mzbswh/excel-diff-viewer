@@ -2,6 +2,13 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.1.1 - 2026-09-21
+
+- Open the Excel loading view before closing the native SCM diff, avoiding a temporary switch to an unrelated editor while workbooks load.
+- Initialize the viewer alongside workbook loading, apply the configured theme on the first render, and remove the initial opacity transition to reduce flashing.
+- Skip unused cell HTML generation and defer formatted cell text generation until needed to reduce parsing work.
+- Update installation links and the VSIX installation example in the README.
+
 ## 1.1.0 - 2026-09-20
 
 - Align inserted/deleted columns and rows using reliable headers, unique IDs, and shared content, avoiding cascading false modifications. Preserve renamed headers and original Before/After addresses.

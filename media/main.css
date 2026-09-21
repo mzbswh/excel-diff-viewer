@@ -66,11 +66,9 @@ button {
   background:
     radial-gradient(circle at 50% -20%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 32%),
     var(--bg);
-  transition: opacity 160ms ease;
 }
 
 .app.loading {
-  opacity: 0.58;
   pointer-events: none;
 }
 

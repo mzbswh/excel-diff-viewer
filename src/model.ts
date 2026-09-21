@@ -126,13 +126,17 @@ export class WorkbookComparison {
         type: 'array',
         cellDates: true,
         cellFormula: true,
-        cellNF: true
+        cellNF: true,
+        cellHTML: false,
+        cellText: false
       });
       rightBook = XLSX.read(rightBytes, {
         type: 'array',
         cellDates: true,
         cellFormula: true,
-        cellNF: true
+        cellNF: true,
+        cellHTML: false,
+        cellText: false
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

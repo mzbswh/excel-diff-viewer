@@ -110,6 +110,9 @@
         message.rowFilter,
         message.focusChanges
       );
+    } else if (message.type === 'loadError') {
+      elements.app.classList.remove('loading');
+      showError(message.message);
     } else if (message.type === 'page') {
       if (message.requestId === state.requestId) { receivePage(message.page); }
     } else if (message.type === 'navigation') {
@@ -117,6 +120,7 @@
         receiveNavigation(message.target);
       }
     } else if (message.type === 'error' && message.requestId === state.requestId) {
+      elements.app.classList.remove('loading');
       for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
         grid.removeAttribute('aria-busy');
       }
@@ -175,10 +179,10 @@
     }
     updateFilterButtons();
     applySplitRatio();
-    elements.app.classList.remove('loading');
     if (state.sheet) {
       selectSheet(state.sheet, false);
     } else {
+      elements.app.classList.remove('loading');
       const option = document.createElement('option');
       option.textContent = 'No worksheets';
       elements.sheetSelect.append(option);
@@ -340,6 +344,7 @@
     elements.unifiedGrid.removeAttribute('aria-busy');
     renderGrids(page);
     updatePagination(page);
+    elements.app.classList.remove('loading');
     persistState();
   }
 
