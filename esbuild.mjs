@@ -4,9 +4,9 @@ const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
 const context = await esbuild.context({
-  entryPoints: ['src/extension.ts'],
+  entryPoints: ['src/extension.ts', 'src/parse-worker.ts'],
   bundle: true,
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   external: ['vscode'],
   format: 'cjs',
   platform: 'node',

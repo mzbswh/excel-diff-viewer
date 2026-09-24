@@ -2,6 +2,12 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.2.0 - 2026-09-24
+
+- Preload Webview scripts and styles during extension activation to shorten the first comparison without opening an extra tab.
+- Parse workbook versions concurrently when beneficial, reuse recent comparisons only after validating both file contents, and log open-stage timings and URI schemes.
+- Add `excelDiffViewer.cellHoverDelay` to configure when cell hover previews appear.
+
 ## 1.1.1 - 2026-09-21
 
 - Open the Excel loading view before closing the native SCM diff, avoiding a temporary switch to an unrelated editor while workbooks load.

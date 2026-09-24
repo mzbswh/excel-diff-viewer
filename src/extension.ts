@@ -1,12 +1,28 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { WorkbookComparison } from './model';
-import { ExcelDiffPanel } from './panel';
+import { ExcelDiffPanel, type WebviewAssets } from './panel';
+import { WorkbookParserWorker } from './parse-worker-client';
+import { DiffOpenTiming } from './timing';
 
 const selectedUriKey = 'excelDiffViewer.selectedUri';
 const excelDiffPatterns = ['*.xlsx', '*.xlsm', '*.xlsb', '*.xls'] as const;
+let comparisonId = 0;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const timingOutput = vscode.window.createOutputChannel('Excel Diff Viewer');
+  context.subscriptions.push(timingOutput);
+  const preloadStartedAt = performance.now();
+  const webviewAssets = ExcelDiffPanel.preloadAssets(context.extensionUri).then(
+    (assets) => {
+      timingOutput.appendLine(`Webview assets preloaded: ${(performance.now() - preloadStartedAt).toFixed(1)} ms`);
+      return assets;
+    },
+    (error) => {
+      timingOutput.appendLine(`Webview asset preload failed: ${String(error)}`);
+      return undefined;
+    }
+  );
   await ensureExcelDiffAssociations();
   const interceptedAutoDiffTabs = new WeakSet<vscode.Tab>();
 
@@ -59,7 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const left = uris[0];
       const right = uris[1];
       if (left && right) {
-        await openComparison(context, left, right, true);
+        await openComparison(context, left, right, true, webviewAssets, timingOutput);
       }
     }),
     vscode.commands.registerCommand(
@@ -90,7 +106,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           await vscode.window.showWarningMessage('Choose a different Excel file to compare.');
           return;
         }
-        await openComparison(context, left, right, true);
+        await openComparison(context, left, right, true, webviewAssets, timingOutput);
       }
     ),
     vscode.commands.registerCommand('excelDiffViewer.clearSelected', async () => {
@@ -115,7 +131,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     interceptedAutoDiffTabs.add(tab);
 
-    void openComparison(context, input.original, input.modified, false, tab);
+    void openComparison(context, input.original, input.modified, false, webviewAssets, timingOutput, tab);
   };
 
   context.subscriptions.push(
@@ -182,26 +198,46 @@ async function openComparison(
   left: vscode.Uri,
   right: vscode.Uri,
   showProgress: boolean,
+  webviewAssets: Promise<WebviewAssets | undefined>,
+  timingOutput: vscode.OutputChannel,
   originalTab?: vscode.Tab
 ): Promise<boolean> {
-  const buildComparison = async (): Promise<WorkbookComparison> => {
-    const ignoreWhitespace = vscode.workspace
-      .getConfiguration('excelDiffViewer')
-      .get<boolean>('ignoreWhitespace', false);
-    return WorkbookComparison.create(left, right, ignoreWhitespace);
-  };
+  const timing = new DiffOpenTiming(timingOutput, ++comparisonId, resourceName(right));
+  if (originalTab) {
+    timing.mark('SCM diff detected');
+  }
+  const ignoreWhitespace = vscode.workspace
+    .getConfiguration('excelDiffViewer')
+    .get<boolean>('ignoreWhitespace', false);
+  const parserWorker = WorkbookComparison.mayReuse(left, right, ignoreWhitespace)
+    ? undefined
+    : new WorkbookParserWorker(context.extensionUri, timingOutput);
+  const buildComparison = (): Promise<WorkbookComparison> =>
+    WorkbookComparison.create(left, right, ignoreWhitespace, timing, parserWorker);
 
   let panel: ExcelDiffPanel | undefined;
   try {
+    // Start fetching Git/LFS versions while VS Code creates the Webview.
+    const comparisonPromise = buildComparison();
+    void comparisonPromise.catch(() => {});
+    const assets = await webviewAssets;
+    const panelStartedAt = performance.now();
     panel = ExcelDiffPanel.show(
       context,
       `Excel Diff · ${resourceName(right)}`,
-      originalTab?.group.viewColumn
+      originalTab?.group.viewColumn,
+      timing,
+      assets
     );
+    timing.measure('create Webview panel', panelStartedAt);
     // Install the replacement before closing the native diff, so the editor
     // does not fall back to an unrelated tab while the workbooks are loading.
     if (originalTab) {
-      void vscode.window.tabGroups.close(originalTab, true).then(undefined, () => {});
+      const closeStartedAt = performance.now();
+      void vscode.window.tabGroups.close(originalTab, true).then(
+        () => timing.measure('close native diff tab', closeStartedAt),
+        () => timing.measure('close native diff tab failed', closeStartedAt)
+      );
     }
     const comparison = showProgress
       ? await vscode.window.withProgress(
@@ -209,16 +245,22 @@ async function openComparison(
             location: vscode.ProgressLocation.Notification,
             title: 'Comparing Excel workbooks…'
           },
-          buildComparison
+          () => comparisonPromise
         )
-      : await buildComparison();
+      : await comparisonPromise;
+    timing.mark('comparison ready');
     await panel.setComparison(comparison);
+    timing.mark('comparison sent to Webview');
     return true;
   } catch (error) {
+    parserWorker?.dispose();
+    timing.mark('comparison failed');
     const message = error instanceof Error ? error.message : String(error);
     await panel?.showLoadError(message);
     await vscode.window.showErrorMessage(`Excel comparison failed: ${message}`);
     return false;
+  } finally {
+    parserWorker?.dispose();
   }
 }
 

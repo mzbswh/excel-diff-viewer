@@ -83,6 +83,7 @@ Excel Diff Viewer is read-only. It does not modify either workbook.
 | `excelDiffViewer.navigationUnit` | `cell` | Navigate by changed `cell` or changed `row`. |
 | `excelDiffViewer.rowFilter` | `all` | Initially select `all`, `changed`, `modified`, `added`, or `removed` differences. |
 | `excelDiffViewer.pageSize` | `200` | Render between 50 and 1,000 worksheet rows per page. |
+| `excelDiffViewer.cellHoverDelay` | `150` | Delay in milliseconds before showing a cell hover preview (0–2,000). Set to `0` for immediate display. |
 | `excelDiffViewer.ignoreWhitespace` | `false` | Ignore leading, trailing, and repeated whitespace in text cells. |
 | `excelDiffViewer.showUnchangedSheets` | `true` | Include unchanged worksheets in the sheet navigator. |
 

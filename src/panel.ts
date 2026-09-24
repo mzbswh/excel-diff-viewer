@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { WorkbookComparison, type RowFilter } from './model';
+import type { DiffOpenTiming } from './timing';
 
 type TextDiffGranularity = 'character' | 'word' | 'line';
 type TextDiffLayout = 'sideBySide' | 'inline' | 'stacked';
@@ -20,6 +21,17 @@ interface RequestPageMessage {
 
 interface ReadyMessage {
   type: 'ready';
+}
+
+interface TimingMessage {
+  type: 'timing';
+  stage: 'startup' | 'initialize' | 'firstPageRender' | 'firstPageFrame';
+  durationMs: number;
+}
+
+export interface WebviewAssets {
+  script: string;
+  style: string;
 }
 
 interface OpenLocalFileMessage {
@@ -58,19 +70,28 @@ type WebviewMessage =
   | RequestChangeMessage
   | UpdateSettingMessage
   | ReadyMessage
+  | TimingMessage
   | OpenLocalFileMessage;
 
 export class ExcelDiffPanel {
   private disposed = false;
   private ready = false;
+  private firstPageRequested = false;
   private comparison?: WorkbookComparison;
   private loadError?: string;
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly extensionUri: vscode.Uri,
-    private readonly pageSize: number
+    private readonly pageSize: number,
+    private readonly timing: DiffOpenTiming,
+    private readonly assets?: WebviewAssets
   ) {
+    const configurationListener = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('excelDiffViewer.cellHoverDelay')) {
+        void panel.webview.postMessage({ type: 'cellHoverDelayChanged', delay: getCellHoverDelay() });
+      }
+    });
     panel.webview.onDidReceiveMessage(
       (message: WebviewMessage) => this.onMessage(message),
       undefined,
@@ -78,6 +99,7 @@ export class ExcelDiffPanel {
     );
     panel.onDidDispose(() => {
       this.disposed = true;
+      configurationListener.dispose();
     });
     panel.webview.html = this.renderHtml(panel.webview);
   }
@@ -85,7 +107,9 @@ export class ExcelDiffPanel {
   static show(
     context: vscode.ExtensionContext,
     title: string,
-    viewColumn = vscode.ViewColumn.Active
+    viewColumn = vscode.ViewColumn.Active,
+    timing: DiffOpenTiming,
+    assets?: WebviewAssets
   ): ExcelDiffPanel {
     const panel = vscode.window.createWebviewPanel(
       'excelDiffViewer.diff',
@@ -107,8 +131,19 @@ export class ExcelDiffPanel {
     return new ExcelDiffPanel(
       panel,
       context.extensionUri,
-      Math.max(50, Math.min(1000, configuredPageSize))
+      Math.max(50, Math.min(1000, configuredPageSize)),
+      timing,
+      assets
     );
+  }
+
+  static async preloadAssets(extensionUri: vscode.Uri): Promise<WebviewAssets> {
+    const [script, style] = await Promise.all([
+      vscode.workspace.fs.readFile(vscode.Uri.joinPath(extensionUri, 'media', 'main.js')),
+      vscode.workspace.fs.readFile(vscode.Uri.joinPath(extensionUri, 'media', 'main.css'))
+    ]);
+    const decoder = new TextDecoder();
+    return { script: decoder.decode(script), style: decoder.decode(style) };
   }
 
   async setComparison(comparison: WorkbookComparison): Promise<void> {
@@ -129,6 +164,7 @@ export class ExcelDiffPanel {
     }
     if (!this.comparison) { return; }
     const configuration = vscode.workspace.getConfiguration('excelDiffViewer');
+    const sendStartedAt = performance.now();
     await this.panel.webview.postMessage({
       type: 'initialize',
       summary: this.comparison.summary,
@@ -139,8 +175,10 @@ export class ExcelDiffPanel {
       textDiffLayout: configuration.get<TextDiffLayout>('textDiffLayout', 'sideBySide'),
       navigationUnit: configuration.get<'cell' | 'row'>('navigationUnit', 'cell'),
       rowFilter: configuration.get<RowFilter>('rowFilter', 'all'),
-      focusChanges: configuration.get<boolean>('focusChanges', false)
+      focusChanges: configuration.get<boolean>('focusChanges', false),
+      cellHoverDelay: getCellHoverDelay()
     });
+    this.timing.measure('send Webview initialize', sendStartedAt);
   }
 
   private async onMessage(message: WebviewMessage): Promise<void> {
@@ -149,7 +187,14 @@ export class ExcelDiffPanel {
     }
     if (message.type === 'ready') {
       this.ready = true;
+      this.timing.mark('Webview ready');
       await this.initialize();
+      return;
+    }
+    if (message.type === 'timing') {
+      if (Number.isFinite(message.durationMs) && message.durationMs >= 0) {
+        this.timing.record(`Webview ${message.stage}`, message.durationMs);
+      }
       return;
     }
     if (!this.comparison) { return; }
@@ -173,7 +218,13 @@ export class ExcelDiffPanel {
       return;
     }
     if (message.type === 'requestPage') {
+      const firstPage = !this.firstPageRequested;
+      this.firstPageRequested = true;
+      if (firstPage) {
+        this.timing.mark('first page requested');
+      }
       try {
+        const pageStartedAt = performance.now();
         const page = this.comparison.getPage(
           message.sheet,
           message.page,
@@ -188,7 +239,14 @@ export class ExcelDiffPanel {
             expandedColumns: Array.isArray(message.expandedColumns) ? message.expandedColumns.filter(Number.isInteger) : []
           }
         );
+        if (firstPage) {
+          this.timing.measure('build first page', pageStartedAt);
+        }
+        const sendStartedAt = performance.now();
         await this.panel.webview.postMessage({ type: 'page', page, requestId: message.requestId });
+        if (firstPage) {
+          this.timing.measure('send first page', sendStartedAt);
+        }
       } catch (error) {
         await this.panel.webview.postMessage({
           type: 'error',
@@ -242,10 +300,16 @@ export class ExcelDiffPanel {
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'main.css'));
     const csp = [
       "default-src 'none'",
-      `style-src ${webview.cspSource}`,
+      `style-src 'nonce-${nonce}' ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
       `img-src ${webview.cspSource} data:`
     ].join('; ');
+    const styleTag = this.assets
+      ? `<style nonce="${nonce}">${this.assets.style.replace(/<\/style/gi, '<\\/style')}</style>`
+      : `<link rel="stylesheet" href="${styleUri}">`;
+    const scriptTag = this.assets
+      ? `<script nonce="${nonce}">${this.assets.script.replace(/<\/script/gi, '<\\/script')}</script>`
+      : `<script nonce="${nonce}" src="${scriptUri}"></script>`;
 
     return /* html */ `<!doctype html>
 <html lang="en" data-theme="${theme}">
@@ -253,7 +317,7 @@ export class ExcelDiffPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
-  <link rel="stylesheet" href="${styleUri}">
+  ${styleTag}
   <title>Excel Diff Viewer</title>
 </head>
 <body>
@@ -435,10 +499,15 @@ export class ExcelDiffPanel {
     </dialog>
     <div id="hover-tooltip" class="hover-tooltip" role="tooltip" hidden></div>
   </div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  ${scriptTag}
 </body>
 </html>`;
   }
+}
+
+function getCellHoverDelay(): number {
+  const value = vscode.workspace.getConfiguration('excelDiffViewer').get<number>('cellHoverDelay', 150);
+  return Number.isFinite(value) ? Math.max(0, Math.min(2000, value)) : 150;
 }
 
 function isRowFilter(value: string): value is RowFilter {

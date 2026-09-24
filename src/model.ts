@@ -3,6 +3,9 @@ import * as vscode from 'vscode';
 import * as XLSX from 'xlsx';
 import { alignColumns, type ColumnView } from './columns';
 import { alignRows, type RowAlignment } from './rows';
+import { workbookReadOptions } from './parse-options';
+import type { WorkbookParserWorker } from './parse-worker-client';
+import type { DiffOpenTiming } from './timing';
 
 export type DiffStatus = 'unchanged' | 'changed' | 'added' | 'removed';
 export type RowFilter = 'all' | 'changed' | 'modified' | 'added' | 'removed';
@@ -98,8 +101,24 @@ interface SheetModel {
   changedCells: ChangeLocation[];
 }
 
+interface CachedComparison {
+  comparison: WorkbookComparison;
+  leftBytes: Uint8Array;
+  rightBytes: Uint8Array;
+  expires: NodeJS.Timeout;
+}
+
+const recentComparisons = new Map<string, CachedComparison>();
+const maxCachedComparisonBytes = 128 * 1024;
+const maxCachedComparisons = 2;
+const comparisonCacheTtlMs = 60_000;
+
 export class WorkbookComparison {
   readonly summary: WorkbookSummary;
+
+  static mayReuse(leftUri: vscode.Uri, rightUri: vscode.Uri, ignoreWhitespace: boolean): boolean {
+    return recentComparisons.has(comparisonCacheKey(leftUri, rightUri, ignoreWhitespace));
+  }
 
   private constructor(
     private readonly sheets: Map<string, SheetModel>,
@@ -112,32 +131,69 @@ export class WorkbookComparison {
   static async create(
     leftUri: vscode.Uri,
     rightUri: vscode.Uri,
-    ignoreWhitespace: boolean
+    ignoreWhitespace: boolean,
+    timing?: DiffOpenTiming,
+    parserWorker?: WorkbookParserWorker
   ): Promise<WorkbookComparison> {
+    const readStartedAt = performance.now();
     const [leftBytes, rightBytes] = await Promise.all([
-      vscode.workspace.fs.readFile(leftUri),
-      vscode.workspace.fs.readFile(rightUri)
+      vscode.workspace.fs.readFile(leftUri).then((bytes) => {
+        timing?.measure(`read before ${leftUri.scheme} (${bytes.byteLength} bytes)`, readStartedAt);
+        return bytes;
+      }),
+      vscode.workspace.fs.readFile(rightUri).then((bytes) => {
+        timing?.measure(`read after ${rightUri.scheme} (${bytes.byteLength} bytes)`, readStartedAt);
+        return bytes;
+      })
     ]);
+    timing?.measure('read both', readStartedAt);
+
+    const cacheable = leftBytes.byteLength + rightBytes.byteLength <= maxCachedComparisonBytes;
+    const cacheKey = cacheable
+      ? comparisonCacheKey(leftUri, rightUri, ignoreWhitespace)
+      : undefined;
+    const cached = cacheKey === undefined ? undefined : recentComparisons.get(cacheKey);
+    // SCM URIs may keep the same identity when index content changes.
+    if (cacheKey !== undefined && cached && Buffer.compare(leftBytes, cached.leftBytes) === 0 &&
+        Buffer.compare(rightBytes, cached.rightBytes) === 0) {
+      rememberComparison(cacheKey, cached.comparison, cached.leftBytes, cached.rightBytes);
+      timing?.mark('comparison cache hit');
+      return cached.comparison;
+    }
+    const leftSnapshot = cacheable ? Uint8Array.from(leftBytes) : undefined;
+    const rightSnapshot = cacheable ? Uint8Array.from(rightBytes) : undefined;
 
     let leftBook: XLSX.WorkBook;
     let rightBook: XLSX.WorkBook;
     try {
-      leftBook = XLSX.read(leftBytes, {
-        type: 'array',
-        cellDates: true,
-        cellFormula: true,
-        cellNF: true,
-        cellHTML: false,
-        cellText: false
-      });
-      rightBook = XLSX.read(rightBytes, {
-        type: 'array',
-        cellDates: true,
-        cellFormula: true,
-        cellNF: true,
-        cellHTML: false,
-        cellText: false
-      });
+      const parseStartedAt = performance.now();
+      const beforeTask = leftBytes.byteLength >= 16 * 1024 && rightBytes.byteLength >= 16 * 1024
+        ? parserWorker?.tryParse(leftBytes)
+        : undefined;
+      if (beforeTask) {
+        void beforeTask.catch(() => {});
+        const rightParseStartedAt = performance.now();
+        rightBook = XLSX.read(rightBytes, workbookReadOptions);
+        timing?.measure('parse after', rightParseStartedAt);
+        try {
+          const result = await beforeTask;
+          leftBook = result.workbook;
+          timing?.record('parse before (worker)', result.durationMs);
+        } catch {
+          const leftParseStartedAt = performance.now();
+          leftBook = XLSX.read(leftBytes, workbookReadOptions);
+          timing?.measure('parse before (fallback)', leftParseStartedAt);
+        }
+        timing?.measure('parse both parallel', parseStartedAt);
+      } else {
+        const leftParseStartedAt = performance.now();
+        leftBook = XLSX.read(leftBytes, workbookReadOptions);
+        timing?.measure('parse before', leftParseStartedAt);
+        const rightParseStartedAt = performance.now();
+        rightBook = XLSX.read(rightBytes, workbookReadOptions);
+        timing?.measure('parse after', rightParseStartedAt);
+        timing?.measure('parse both', parseStartedAt);
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Unable to parse one of the Excel files. ${detail}`);
@@ -158,10 +214,13 @@ export class WorkbookComparison {
       sheets: 0
     };
 
-    for (const name of sheetNames) {
+    const compareStartedAt = performance.now();
+    for (const [index, name] of sheetNames.entries()) {
       const left = leftBook.Sheets[name];
       const right = rightBook.Sheets[name];
+      const sheetStartedAt = performance.now();
       const model = buildSheetModel(name, left, right, ignoreWhitespace);
+      timing?.measure(`compare sheet ${index + 1}/${sheetNames.length}`, sheetStartedAt);
       sheets.set(name, model);
       sheetSummaries.push(model.summary);
       totals.rows.changed += model.summary.rowChanges.changed;
@@ -174,8 +233,9 @@ export class WorkbookComparison {
         totals.sheets += 1;
       }
     }
+    timing?.measure('compare all sheets', compareStartedAt);
 
-    return new WorkbookComparison(
+    const comparison = new WorkbookComparison(
       sheets,
       {
         left: describeUri(leftUri),
@@ -185,6 +245,10 @@ export class WorkbookComparison {
       },
       ignoreWhitespace
     );
+    if (cacheKey !== undefined && leftSnapshot && rightSnapshot) {
+      rememberComparison(cacheKey, comparison, leftSnapshot, rightSnapshot);
+    }
+    return comparison;
   }
 
   getPage(
@@ -378,6 +442,33 @@ export class WorkbookComparison {
       page: Math.max(0, Math.floor(Math.max(0, rowPosition) / pageSize))
     };
   }
+}
+
+function comparisonCacheKey(leftUri: vscode.Uri, rightUri: vscode.Uri, ignoreWhitespace: boolean): string {
+  return JSON.stringify([leftUri.toString(), rightUri.toString(), ignoreWhitespace]);
+}
+
+function rememberComparison(
+  key: string,
+  comparison: WorkbookComparison,
+  leftBytes: Uint8Array,
+  rightBytes: Uint8Array
+): void {
+  const existing = recentComparisons.get(key);
+  if (existing) {
+    clearTimeout(existing.expires);
+    recentComparisons.delete(key);
+  }
+  if (recentComparisons.size >= maxCachedComparisons) {
+    const oldestKey = recentComparisons.keys().next().value;
+    if (oldestKey !== undefined) {
+      clearTimeout(recentComparisons.get(oldestKey)!.expires);
+      recentComparisons.delete(oldestKey);
+    }
+  }
+  const expires = setTimeout(() => recentComparisons.delete(key), comparisonCacheTtlMs);
+  expires.unref();
+  recentComparisons.set(key, { comparison, leftBytes, rightBytes, expires });
 }
 
 function buildSheetModel(

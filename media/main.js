@@ -14,6 +14,7 @@
     textDiffGranularity: normalizeTextDiffGranularity(previousState.textDiffGranularity),
     textDiffLayout: normalizeTextDiffLayout(previousState.textDiffLayout),
     navigationUnit: 'cell',
+    cellHoverDelay: 150,
     selectedCell: null,
     pendingFocus: null,
     splitRatio: Number.isFinite(previousState.splitRatio)
@@ -87,6 +88,7 @@
   let tooltipShowTimer;
   let pendingTooltipTarget = null;
   let activeDialogComparison = null;
+  let firstPageRendered = false;
   const comparisonTooltips = new WeakMap();
   const textDiffMatrixLimit = 1_000_000;
   const graphemeSegmenter = typeof Intl.Segmenter === 'function'
@@ -99,6 +101,7 @@
   window.addEventListener('message', (event) => {
     const message = event.data;
     if (message.type === 'initialize') {
+      const startedAt = performance.now();
       initialize(
         message.summary,
         message.showUnchangedSheets,
@@ -108,8 +111,12 @@
         message.textDiffLayout,
         message.navigationUnit,
         message.rowFilter,
-        message.focusChanges
+        message.focusChanges,
+        message.cellHoverDelay
       );
+      vscode.postMessage({ type: 'timing', stage: 'initialize', durationMs: performance.now() - startedAt });
+    } else if (message.type === 'cellHoverDelayChanged') {
+      state.cellHoverDelay = normalizeCellHoverDelay(message.delay);
     } else if (message.type === 'loadError') {
       elements.app.classList.remove('loading');
       showError(message.message);
@@ -137,10 +144,12 @@
     textDiffLayout,
     navigationUnit,
     rowFilter,
-    focusChanges
+    focusChanges,
+    cellHoverDelay
   ) {
     state.summary = summary;
     state.focusChanges = focusChanges === true;
+    state.cellHoverDelay = normalizeCellHoverDelay(cellHoverDelay);
     state.showUnchangedSheets = showUnchangedSheets;
     state.theme = theme === 'light' ? 'light' : 'dark';
     state.diffMode = diffMode === 'unified' ? 'unified' : 'sideBySide';
@@ -323,6 +332,7 @@
         return;
       }
     }
+    const renderStartedAt = performance.now();
     state.page = page.page;
     state.pageData = page;
     updateFilterButtons(page.filterCounts);
@@ -346,6 +356,13 @@
     updatePagination(page);
     elements.app.classList.remove('loading');
     persistState();
+    if (!firstPageRendered) {
+      firstPageRendered = true;
+      vscode.postMessage({ type: 'timing', stage: 'firstPageRender', durationMs: performance.now() - renderStartedAt });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        vscode.postMessage({ type: 'timing', stage: 'firstPageFrame', durationMs: performance.now() - renderStartedAt });
+      }));
+    }
   }
 
   function renderGrids(page) {
@@ -1020,6 +1037,10 @@
     return value === 'inline' || value === 'stacked' ? value : 'sideBySide';
   }
 
+  function normalizeCellHoverDelay(value) {
+    return Number.isFinite(value) ? Math.max(0, Math.min(2000, value)) : 150;
+  }
+
   function syncTextDiffControls() {
     elements.cellComparisonGranularity.value = state.textDiffGranularity;
     elements.cellComparisonLayout.value = state.textDiffLayout;
@@ -1466,7 +1487,7 @@
       if (target.isConnected && (target.matches(':hover') || target.matches(':focus-visible'))) {
         showTooltip(target, clientX);
       }
-    }, 300);
+    }, target.matches('.diff-table td[data-row][data-column]') ? state.cellHoverDelay : 300);
   }
 
   function showTooltip(target, clientX) {
@@ -1930,5 +1951,6 @@
     }
   });
 
+  vscode.postMessage({ type: 'timing', stage: 'startup', durationMs: performance.now() });
   vscode.postMessage({ type: 'ready' });
 })();
