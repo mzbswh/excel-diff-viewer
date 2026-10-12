@@ -2,6 +2,11 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.2.1 - 2026-10-12
+
+- Update visible cell hover previews immediately when moving between cells, applying the configured delay only when opening a new preview.
+- Show cell hover previews synchronously when `excelDiffViewer.cellHoverDelay` is set to 0.
+
 ## 1.2.0 - 2026-09-24
 
 - Preload Webview scripts and styles during extension activation to shorten the first comparison without opening an extra tab.

@@ -2,7 +2,7 @@
   "name": "excel-diff-viewer",
   "displayName": "Excel Diff Viewer",
   "description": "A modern side-by-side Excel workbook diff viewer for Visual Studio Code.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "mzbswh",
   "author": {
     "name": "mzbswh"
@@ -227,7 +227,7 @@
           "default": 150,
           "minimum": 0,
           "maximum": 2000,
-          "description": "Delay in milliseconds before showing a cell hover preview. Set to 0 to show it immediately."
+          "description": "Delay in milliseconds before showing the first cell hover preview. Moving between cells while a preview is visible updates it immediately. Set to 0 to always show it immediately."
         },
         "excelDiffViewer.ignoreWhitespace": {
           "type": "boolean",

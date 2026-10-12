@@ -1476,10 +1476,17 @@
   function scheduleTooltipShow(target, clientX) {
     window.clearTimeout(tooltipHideTimer);
     if (target === activeTooltipTarget || target === pendingTooltipTarget) { return; }
+    const isCell = target.matches('.diff-table td[data-row][data-column]');
+    const switchCellImmediately = isCell && !elements.hoverTooltip.hidden &&
+      activeTooltipTarget?.matches('.diff-table td[data-row][data-column]');
     hideTooltip();
     if (target.dataset.tooltipOverflow) {
       const text = target.querySelector('.cell-content > span, .unified-value > span');
       if (!text || text.scrollWidth <= text.clientWidth) { return; }
+    }
+    if (switchCellImmediately || (isCell && state.cellHoverDelay === 0)) {
+      showTooltip(target, clientX);
+      return;
     }
     pendingTooltipTarget = target;
     tooltipShowTimer = window.setTimeout(() => {
@@ -1487,7 +1494,7 @@
       if (target.isConnected && (target.matches(':hover') || target.matches(':focus-visible'))) {
         showTooltip(target, clientX);
       }
-    }, target.matches('.diff-table td[data-row][data-column]') ? state.cellHoverDelay : 300);
+    }, isCell ? state.cellHoverDelay : 300);
   }
 
   function showTooltip(target, clientX) {
