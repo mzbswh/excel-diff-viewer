@@ -34,7 +34,7 @@ You can also install it from the Command Palette with **Extensions: Install Exte
 Download the `.vsix` file from the [latest GitHub Release](https://github.com/mzbswh/excel-diff-viewer/releases/latest), then run:
 
 ```bash
-code --install-extension excel-diff-viewer-1.3.0.vsix
+code --install-extension excel-diff-viewer-1.3.1.vsix
 ```
 
 ## Usage

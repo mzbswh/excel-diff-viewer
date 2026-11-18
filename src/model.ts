@@ -1,5 +1,5 @@
-import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { describeFile, type FileDescriptor } from './file-source';
 import * as XLSX from 'xlsx';
 import { alignColumns, type ColumnView } from './columns';
 import { alignRows, type RowAlignment } from './rows';
@@ -9,12 +9,6 @@ import type { DiffOpenTiming } from './timing';
 
 export type DiffStatus = 'unchanged' | 'changed' | 'added' | 'removed';
 export type RowFilter = 'all' | 'changed' | 'modified' | 'added' | 'removed';
-
-export interface FileDescriptor {
-  name: string;
-  detail: string;
-  uri: string;
-}
 
 export interface CellView {
   display: string;
@@ -181,7 +175,7 @@ export class WorkbookComparison {
     parserWorker?: WorkbookParserWorker
   ): Promise<WorkbookComparison> {
     const readStartedAt = performance.now();
-    const [leftBytes, rightBytes] = await Promise.all([
+    const [leftBytes, rightBytes, leftFile, rightFile] = await Promise.all([
       vscode.workspace.fs.readFile(leftUri).then((bytes) => {
         timing?.measure(`read before ${leftUri.scheme} (${bytes.byteLength} bytes)`, readStartedAt);
         return bytes;
@@ -189,7 +183,9 @@ export class WorkbookComparison {
       vscode.workspace.fs.readFile(rightUri).then((bytes) => {
         timing?.measure(`read after ${rightUri.scheme} (${bytes.byteLength} bytes)`, readStartedAt);
         return bytes;
-      })
+      }),
+      describeFile(leftUri, rightUri.scheme === 'git'),
+      describeFile(rightUri, leftUri.scheme === 'git')
     ]);
     timing?.measure('read both', readStartedAt);
 
@@ -201,6 +197,8 @@ export class WorkbookComparison {
     // SCM URIs may keep the same identity when index content changes.
     if (cacheKey !== undefined && cached && Buffer.compare(leftBytes, cached.leftBytes) === 0 &&
         Buffer.compare(rightBytes, cached.rightBytes) === 0) {
+      cached.comparison.summary.left = leftFile;
+      cached.comparison.summary.right = rightFile;
       rememberComparison(cacheKey, cached.comparison, cached.leftBytes, cached.rightBytes);
       timing?.mark('comparison cache hit');
       return cached.comparison;
@@ -283,8 +281,8 @@ export class WorkbookComparison {
     const comparison = new WorkbookComparison(
       sheets,
       {
-        left: describeUri(leftUri),
-        right: describeUri(rightUri),
+        left: leftFile,
+        right: rightFile,
         sheets: sheetSummaries,
         totals
       },
@@ -882,28 +880,4 @@ function tryDecodeCell(address: string): XLSX.CellAddress | undefined {
   } catch {
     return undefined;
   }
-}
-
-function describeUri(uri: vscode.Uri): FileDescriptor {
-  const decodedPath = decodeURIComponent(uri.path);
-  const name = path.posix.basename(decodedPath) || 'Excel workbook';
-  let revision = '';
-  if (uri.query) {
-    try {
-      const query = JSON.parse(uri.query) as Record<string, unknown>;
-      const candidate = query.ref ?? query.sha ?? query.revision;
-      if (typeof candidate === 'string' && candidate.length > 0) {
-        revision = candidate.length > 12 ? candidate.slice(0, 12) : candidate;
-      }
-    } catch {
-      const match = uri.query.match(/[a-f\d]{7,40}/i);
-      revision = match?.[0]?.slice(0, 12) ?? '';
-    }
-  }
-  const detail = revision
-    ? `${uri.scheme} · ${revision}`
-    : uri.scheme === 'file'
-      ? vscode.workspace.asRelativePath(uri, false)
-      : uri.scheme;
-  return { name, detail, uri: uri.toString() };
 }

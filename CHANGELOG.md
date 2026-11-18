@@ -2,6 +2,14 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.3.1 - 2026-11-18
+
+- Fix the duplicate focus border in the worksheet picker.
+- Add Show all alongside Show next 50 to expand an entire section of hidden rows.
+- Identify compared files as a Git commit, working tree, staged changes, or local file, using English labels throughout.
+- Show readable file paths and full commit hashes in file tooltips instead of encoded Git addresses.
+- Refresh file source labels when reusing a cached comparison.
+
 ## 1.3.0 - 2026-11-18
 
 - Replace worksheet pagination with continuous scrolling, loading nearby rows on demand and keeping rendered rows and cached batches limited.

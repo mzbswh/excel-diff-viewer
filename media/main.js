@@ -734,15 +734,18 @@
   function expandRange(kind, start, end) {
     const key = kind === 'rows' ? 'expandedRows' : 'expandedColumns';
     const expanded = new Set(state[key]);
-    for (let index = start; index < Math.min(end, start + 50); index += 1) { expanded.add(index); }
+    for (let index = start; index < end; index += 1) { expanded.add(index); }
     state[key] = [...expanded];
     captureAnchor();
     clearInspector();
     requestRows();
   }
 
-  function gapButton(kind, start, end) {
+  function gapControls(kind, start, end) {
+    const controls = document.createElement('span');
+    controls.className = 'gap-controls';
     const button = document.createElement('button');
+    button.type = 'button';
     button.className = 'expand-gap';
     const count = end - start;
     const label = document.createElement('span');
@@ -756,8 +759,19 @@
     setTooltip(button, kind === 'rows'
       ? 'Rows hidden by the current filter. Expand to see their values without changing the matching counts.'
       : `${count} columns outside this focus hidden. Click to expand${count > 50 ? ' the next 50' : ''} and see their original values.`);
-    button.addEventListener('click', () => expandRange(kind, start, end));
-    return button;
+    button.addEventListener('click', () => expandRange(kind, start, Math.min(end, start + 50)));
+    controls.append(button);
+    if (count > 50) {
+      const showAll = document.createElement('button');
+      showAll.type = 'button';
+      showAll.className = 'expand-gap gap-action';
+      showAll.textContent = 'Show all';
+      showAll.setAttribute('aria-label', `Expand all hidden ${kind} ${start + 1} through ${end}`);
+      setTooltip(showAll, `Show all ${formatNumber(count)} hidden ${kind} in this section.`);
+      showAll.addEventListener('click', () => expandRange(kind, start, end));
+      controls.append(showAll);
+    }
+    return controls;
   }
 
   function updateVirtualSpacers(data) {
@@ -823,7 +837,7 @@
       const cell = document.createElement('td');
       cell.colSpan = columnCount;
       if (entry.kind === 'spacer') { tr.className = 'virtual-spacer'; tr.dataset.spacer = entry.edge; tr.setAttribute('aria-hidden', 'true'); }
-      else if (entry.kind === 'gap') { tr.className = 'row-gap'; tr.dataset.position = String(entry.position); cell.append(gapButton('rows', entry.start, entry.end)); }
+      else if (entry.kind === 'gap') { tr.className = 'row-gap'; tr.dataset.position = String(entry.position); cell.append(gapControls('rows', entry.start, entry.end)); }
       else {
         tr.className = 'loading-row';
         cell.textContent = rowStream.failed.has(Math.floor(entry.position / rowStream.batchSize) * rowStream.batchSize) ? 'Could not load rows. Use Retry.' : 'Loading rows…';
@@ -1492,7 +1506,7 @@
   }
 
   function formatFileTooltip(file) {
-    return `${file.name}\n${file.detail}\n${file.uri}`;
+    return [file.name, file.detail, file.revision, file.path].filter(Boolean).join('\n');
   }
 
   function setTooltip(element, text) {

@@ -1469,7 +1469,8 @@ button {
   cursor: pointer;
   text-decoration: underline;
 }
-.row-gap .expand-gap { position: sticky; left: 8px; }
+.gap-controls { display: inline-flex; align-items: center; }
+.row-gap .gap-controls { position: sticky; left: 8px; }
 .context-row > .row-number { font-style: italic; }
 
 .cell-resizer {
