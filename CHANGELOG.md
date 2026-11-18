@@ -2,6 +2,25 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.3.0 - 2026-11-18
+
+- Replace worksheet pagination with continuous scrolling, loading nearby rows on demand and keeping rendered rows and cached batches limited.
+- Keep change navigation, filters, expanded context, frozen panes, and custom row sizes available while scrolling.
+- Load only nearby columns in wide worksheets, retain existing row elements, and limit outstanding row requests to two.
+- Correct large-sheet scroll positioning, including the last row and small wheel movements when the scrollbar represents millions of rows.
+- Separate finding text from filtering rows, highlight matches, and add previous/next match navigation.
+- Add cell-address navigation, keyboard cell selection, difference counts, and worksheet change navigation.
+- Accept row numbers as well as cell addresses in Go to row or cell, preserving the current column when jumping to a row.
+- Preserve worksheet positions and selections, keep explicit filters, add a persistent cell-details panel, and fit column widths to loaded contents on double-click.
+- Add row-loading retry and improve narrow-window controls.
+- Simplify the viewer into a two-row toolbar with compact filters and change navigation. Move theme, frozen panes, search filtering, and sheet navigation into Options.
+- Remove the separate change overview and its viewport outline, leaving the normal table scrollbar and explicit cell/row navigation counts. Reduce repeated counts, simplify the footer, and add Ctrl/Cmd+G for cell-address navigation.
+- Replace the focus checkbox with a collapse/expand button with state-specific tooltips, and use layout buttons for side-by-side or combined views.
+- Simplify hidden-row separators and hover previews. Keep text comparison settings in the full comparison, avoid large previews for empty cells, and show field titles only when the original header is out of view.
+- Unify dark/light colors, typography, spacing, and controls. Separate blue selection states from difference colors, soften whole-row highlights, and remove the repeated heading from the combined view.
+- Give the worksheet a defined work area, align the file header and controls, refine table typography, and group display options. Use quieter comparison headings and dialog backgrounds.
+- Remove the `excelDiffViewer.pageSize` setting. Workbook parsing and comparison still finish before row loading begins.
+
 ## 1.2.1 - 2026-10-12
 
 - Update visible cell hover previews immediately when moving between cells, applying the configured delay only when opening a new preview.

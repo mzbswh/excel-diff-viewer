@@ -4,10 +4,10 @@
   const state = {
     summary: null,
     sheet: previousState.sheet || '',
-    page: Number.isFinite(previousState.page) ? previousState.page : 0,
+    offset: Number.isInteger(previousState.offset) ? previousState.offset : 0,
     filter: previousState.filter || 'all',
     query: previousState.query || '',
-    pageData: null,
+    rowData: null,
     showUnchangedSheets: true,
     theme: 'dark',
     diffMode: 'sideBySide',
@@ -27,9 +27,18 @@
     focusChanges: previousState.focusPreferenceVersion === 2 && previousState.focusChanges === true,
     expandedRows: [],
     expandedColumns: [],
-    preserveScroll: null,
     sheetSizes: previousState.sheetSizes || {},
-    autoSelectFilter: false
+    findText: previousState.findText ?? previousState.query ?? '',
+    matchOnly: previousState.matchOnly === true,
+    sheetViews: previousState.sheetViews || {},
+    detailsOpen: previousState.detailsOpen === true,
+    activeSide: 'right',
+    dataRequestId: 0,
+    findRequestId: 0,
+    locationRequestId: 0,
+    columnView: null,
+    selectedColumns: [],
+    changePosition: null
   };
 
   const elements = {
@@ -43,7 +52,7 @@
     sheetSelect: document.getElementById('sheet-select'),
     sheetDimensions: document.getElementById('sheet-dimensions'),
     themeSelect: document.getElementById('theme-select'),
-    diffModeSelect: document.getElementById('diff-mode-select'),
+    diffModeSwitch: document.getElementById('diff-mode-switch'),
     search: document.getElementById('search'),
     freezeRows: document.getElementById('freeze-rows'),
     freezeColumns: document.getElementById('freeze-columns'),
@@ -62,10 +71,8 @@
     emptyDetail: document.getElementById('empty-detail'),
     emptyShowChanges: document.getElementById('empty-show-changes'),
     errorBanner: document.getElementById('error-banner'),
-    previousPage: document.getElementById('previous-page'),
-    nextPage: document.getElementById('next-page'),
     rowRange: document.getElementById('row-range'),
-    pageLabel: document.getElementById('page-label'),
+    rowLoading: document.getElementById('row-loading'),
     previousChange: document.getElementById('previous-change'),
     nextChange: document.getElementById('next-change'),
     navigationUnitSelect: document.getElementById('navigation-unit-select'),
@@ -79,7 +86,23 @@
     hoverTooltip: document.getElementById('hover-tooltip')
   };
 
+  const extraElements = ['find-status', 'find-previous', 'find-next', 'match-only', 'go-to', 'change-position',
+    'previous-sheet-change', 'next-sheet-change', 'display-options', 'display-options-button', 'toggle-details', 'details-panel',
+    'details-address', 'details-content', 'close-details', 'navigation-notice', 'retry-rows'];
+  for (const id of extraElements) { elements[id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = document.getElementById(id); }
   let searchTimer;
+  let persistTimer;
+  let noticeTimer;
+  let logicalTop = 0;
+  let restoreHorizontal = null;
+  let restoreIntra = 0;
+  let restoreSelection = null;
+  let pendingSheetDirection = null;
+  const sheetSelections = new Map();
+  const programmaticScroll = new WeakMap();
+  const columnWindow = new WorksheetColumnWindow();
+  const gridRenderers = new Map([elements.leftGrid, elements.rightGrid, elements.unifiedGrid]
+    .map((grid) => [grid, new WorksheetGridRenderer(grid)]));
   let syncingScroll = false;
   let cellResize = null;
   let cellResizeFrame = null;
@@ -88,7 +111,7 @@
   let tooltipShowTimer;
   let pendingTooltipTarget = null;
   let activeDialogComparison = null;
-  let firstPageRendered = false;
+  let firstRowsRendered = false;
   const comparisonTooltips = new WeakMap();
   const textDiffMatrixLimit = 1_000_000;
   const graphemeSegmenter = typeof Intl.Segmenter === 'function'
@@ -120,17 +143,33 @@
     } else if (message.type === 'loadError') {
       elements.app.classList.remove('loading');
       showError(message.message);
-    } else if (message.type === 'page') {
-      if (message.requestId === state.requestId) { receivePage(message.page); }
+    } else if (message.type === 'rows') {
+      if (message.requestId === state.dataRequestId) { receiveRows(message.rows); }
     } else if (message.type === 'navigation') {
-      if (message.requestId === state.navigationRequestId && message.pageRequestId === state.requestId) {
+      if (message.requestId === state.navigationRequestId && message.viewRequestId === state.requestId) {
         receiveNavigation(message.target);
       }
-    } else if (message.type === 'error' && message.requestId === state.requestId) {
+    } else if (message.type === 'findResult') {
+      if (message.requestId === state.findRequestId && message.viewRequestId === state.requestId) {
+        const target = message.target;
+        elements.findStatus.textContent = target ? `${target.ordinal} / ${formatNumber(target.total)}` : 'No matches';
+        elements.findPrevious.disabled = elements.findNext.disabled = !target;
+        if (target?.wrapped) { announce(target.ordinal === 1 ? 'Back to the first match.' : 'Back to the last match.'); }
+        if (target) { jumpToTarget(target, 'find'); }
+      }
+    } else if (message.type === 'location') {
+      if (message.requestId === state.locationRequestId && message.viewRequestId === state.requestId) {
+        if (message.target) { jumpToTarget(message.target, 'location'); }
+        else { announce('That row or cell is not in this view. Check the row number or address, or show all rows and columns.'); }
+      }
+    } else if (message.type === 'error' && message.requestId === state.dataRequestId) {
       elements.app.classList.remove('loading');
       for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
         grid.removeAttribute('aria-busy');
       }
+      rowStream.fail(message.offset);
+      elements.rowLoading.hidden = true;
+      elements.retryRows.hidden = false;
       showError(message.message);
     }
   });
@@ -169,10 +208,16 @@
     elements.rightDetail.textContent = summary.right.detail;
     setTooltip(elements.rightDetail, rightFileTooltip);
     setTooltip(elements.rightName.closest('.file-card'), rightFileTooltip);
-    elements.search.value = state.query;
+    state.query = state.matchOnly ? state.findText : '';
+    elements.search.value = state.findText;
+    elements.matchOnly.checked = state.matchOnly;
+    elements.search.closest('.search-box').classList.toggle('has-query', Boolean(state.findText.trim()));
+    elements.findPrevious.disabled = elements.findNext.disabled = !state.findText.trim();
+    elements.detailsPanel.hidden = !state.detailsOpen;
+    elements.toggleDetails.setAttribute('aria-pressed', String(state.detailsOpen));
     elements.freezeRows.value = state.freezeRows;
     elements.freezeColumns.value = state.freezeColumns;
-    elements.focusChanges.checked = state.focusChanges;
+    syncFocusButton();
     renderSummary();
     renderSheetSelector();
     applyTheme(state.theme);
@@ -184,7 +229,7 @@
     if (!visibleSheets.some((sheet) => sheet.name === state.sheet)) {
       const firstChanged = visibleSheets.find((sheet) => sheet.status !== 'unchanged');
       state.sheet = (firstChanged || visibleSheets[0] || {}).name || '';
-      state.page = 0;
+      state.offset = 0;
     }
     updateFilterButtons();
     applySplitRatio();
@@ -248,32 +293,35 @@
       const changedRows = totalChanges(sheet.rowChanges);
       const changedCells = totalChanges(sheet.cellChanges);
       const changeLabel = changedRows
-        ? `${formatNumber(changedRows)} ${pluralize('row', changedRows)} · ${formatNumber(changedCells)} cells`
+        ? `${formatNumber(changedRows)} ${pluralize('row', changedRows)} · ${formatNumber(changedCells)} ${pluralize('cell', changedCells)}`
         : 'unchanged';
-      option.textContent = `${sheet.name} — ${changeLabel}`;
+      option.textContent = sheet.name;
       option.dataset.tooltip = `${sheet.name} · ${formatNumber(sheet.rows)} rows × ${formatNumber(sheet.columns)} columns · ${changeLabel}`;
       option.selected = sheet.name === state.sheet;
       elements.sheetSelect.append(option);
     }
   }
 
-  function selectSheet(name, resetPage) {
+  function selectSheet(name, resetScroll) {
     const sheet = state.summary.sheets.find((candidate) => candidate.name === name);
     if (!sheet) {
       return;
     }
+    if (name !== state.sheet) { saveSheetPosition(); }
     state.sheet = name;
-    state.expandedRows = [];
-    state.expandedColumns = [];
-    state.autoSelectFilter = true;
-    if (resetPage) {
-      state.page = 0;
-    }
+    const saved = state.sheetViews[name];
+    const canRestore = saved && saved.filter === state.filter && saved.query === state.query;
+    state.expandedRows = canRestore ? saved.expandedRows || [] : [];
+    state.expandedColumns = canRestore ? saved.expandedColumns || [] : [];
+    if (resetScroll) { state.offset = canRestore ? saved.offset : 0; }
+    restoreIntra = canRestore ? saved.intra || 0 : 0;
+    restoreHorizontal = canRestore ? saved.left || 0 : 0;
+    restoreSelection = canRestore ? saved.selectedCell : null;
     elements.sheetSelect.value = name;
     const changedRows = totalChanges(sheet.rowChanges);
     const changedCells = totalChanges(sheet.cellChanges);
     elements.sheetDimensions.textContent = changedRows
-      ? `${formatNumber(sheet.rows)} × ${formatNumber(sheet.columns)} · ${formatNumber(changedRows)} changed ${pluralize('row', changedRows)} · ${formatNumber(changedCells)} cells`
+      ? `${formatNumber(sheet.rows)} × ${formatNumber(sheet.columns)} · ${formatNumber(changedRows)} changed ${pluralize('row', changedRows)} · ${formatNumber(changedCells)} ${pluralize('cell', changedCells)}`
       : `${formatNumber(sheet.rows)} × ${formatNumber(sheet.columns)} · unchanged`;
     const structural = sheet.columnChanges;
     if (totalChanges(structural)) {
@@ -285,132 +333,263 @@
       elements.sheetSelect.selectedOptions[0]?.dataset.tooltip || elements.sheetSelect.selectedOptions[0]?.textContent || ''
     );
     clearInspector();
+    const selection = canRestore && sheetSelections.get(name);
+    if (selection) { state.selectedRow = selection.row; state.selectedColumns = selection.columns; }
     persistState();
-    requestPage();
+    requestRows();
   }
 
-  function requestPage() {
-    if (!state.sheet) {
-      return;
-    }
+  const rowStream = new WorksheetRowStream((offset, limit) => {
+    vscode.postMessage({
+      type: 'requestRows', requestId: state.dataRequestId, sheet: state.sheet,
+      offset, limit, columns: state.columnView?.columns.map((column) => column.index),
+      filter: state.filter, query: state.query, ...viewOptions()
+    });
+  });
+  let viewportFrame = null;
+  let viewportKey = '';
+  let restoreOffset = null;
+
+  function viewOptions() {
+    return {
+      freezeRows: state.freezeRows, freezeColumns: state.freezeColumns,
+      focusChanges: state.focusChanges, expandedRows: state.expandedRows,
+      expandedColumns: state.expandedColumns
+    };
+  }
+
+  function activeGrid() {
+    return state.diffMode === 'unified' ? elements.unifiedGrid : state.activeSide === 'left' ? elements.leftGrid : elements.rightGrid;
+  }
+
+  function scrollViewportHeight() {
+    const grid = activeGrid();
+    const pinned = parseFloat(grid.style.scrollPaddingTop) || 29;
+    return Math.max(32, grid.clientHeight - pinned);
+  }
+
+  function writeScroll(grid, top, left) {
+    grid.scrollTop = top;
+    if (left !== undefined) { grid.scrollLeft = left; }
+    programmaticScroll.set(grid, { top: grid.scrollTop, left: grid.scrollLeft });
+  }
+
+  function moveScroll(top) {
+    if (!rowStream.metadata) { return; }
+    logicalTop = rowStream.metrics(top, scrollViewportHeight()).logical;
+    scheduleViewport();
+  }
+
+  function saveSheetPosition() {
+    if (!state.sheet || !rowStream.metadata) { return; }
+    const offset = rowStream.indexAt(logicalTop);
+    if (state.selectedCell && state.selectedRow?.index === state.selectedCell.row) {
+      sheetSelections.set(state.sheet, { row: state.selectedRow, columns: state.selectedColumns });
+    } else { sheetSelections.delete(state.sheet); }
+    state.sheetViews = { ...state.sheetViews, [state.sheet]: {
+      filter: state.filter, query: state.query, offset,
+      intra: logicalTop - rowStream.heightBefore(offset), left: activeGrid().scrollLeft,
+      selectedCell: state.selectedCell, expandedRows: state.expandedRows, expandedColumns: state.expandedColumns
+    } };
+  }
+
+  function requestRows() {
+    if (!state.sheet) { return; }
     hideTooltip();
     state.requestId += 1;
-    elements.leftGrid.setAttribute('aria-busy', 'true');
-    elements.rightGrid.setAttribute('aria-busy', 'true');
-    elements.unifiedGrid.setAttribute('aria-busy', 'true');
-    vscode.postMessage({
-      type: 'requestPage',
-      requestId: state.requestId,
-      freezeRows: state.freezeRows,
-      freezeColumns: state.freezeColumns,
-      focusChanges: state.focusChanges,
-      expandedRows: state.expandedRows,
-      expandedColumns: state.expandedColumns,
-      sheet: state.sheet,
-      page: state.page,
-      filter: state.filter,
-      query: state.query
+    state.dataRequestId += 1;
+    state.navigationRequestId += 1;
+    state.findRequestId += 1;
+    state.locationRequestId += 1;
+    state.rowData = null;
+    state.columnView = null;
+    state.changePosition = null;
+    viewportKey = '';
+    restoreOffset = state.offset;
+    rowStream.reset();
+    elements.retryRows.hidden = true;
+    elements.findStatus.textContent = '';
+    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) { grid.setAttribute('aria-busy', 'true'); }
+    elements.rowLoading.hidden = false;
+    rowStream.ensure(state.offset, state.offset + 1);
+  }
+
+  function receiveRows(batch) {
+    if (batch.sheet !== state.sheet || batch.filter !== state.filter || batch.query !== state.query) { return; }
+    const firstBatch = !rowStream.metadata;
+    rowStream.receive(batch);
+    if (firstBatch) {
+      state.allColumns = batch.allColumns || batch.columns;
+      updateFilterButtons(batch.filterCounts);
+      const sheet = state.summary.sheets.find((entry) => entry.name === state.sheet);
+      elements.filterSummary.textContent = `${batch.totalRows < sheet.rows ? `${formatNumber(batch.totalRows)} of ${formatNumber(sheet.rows)} rows · ` : ''}${state.allColumns.length < batch.totalColumns ? `${state.allColumns.length}/${batch.totalColumns}` : batch.totalColumns} columns`;
+      const hiddenColumns = batch.totalColumns - state.allColumns.length;
+      if (hiddenColumns > 0) {
+        const showColumns = document.createElement('button');
+        showColumns.className = 'show-hidden-columns';
+        showColumns.textContent = `${hiddenColumns} columns hidden · Show all`;
+        showColumns.addEventListener('click', () => {
+          captureAnchor();
+          state.expandedColumns = Array.from({ length: batch.totalColumns }, (_, index) => index);
+          requestRows();
+        });
+        elements.filterSummary.append(' · ', showColumns);
+      }
+      updateChangePosition();
+      if (restoreSelection) {
+        state.selectedCell = restoreSelection;
+        restoreSelection = null;
+        renderInspector(getCellComparison(state.selectedCell.row, state.selectedCell.column));
+        state.pendingFocus = { ...state.selectedCell };
+      } else if (pendingSheetDirection) {
+        const direction = pendingSheetDirection;
+        pendingSheetDirection = null;
+        requestChange(direction);
+      } else if (state.findText.trim()) { requestFind('next', true); }
+    }
+    const range = state.rowData?.range;
+    if (!range || (batch.offset < range.end && batch.offset + batch.entries.length > range.start) || batch.frozenRows.length && !state.rowData.frozenRows.length) {
+      viewportKey = '';
+      scheduleViewport();
+    }
+  }
+
+  function scheduleViewport() {
+    if (viewportFrame !== null) { return; }
+    viewportFrame = requestAnimationFrame(() => {
+      viewportFrame = null;
+      renderViewport();
     });
   }
 
-  function receivePage(page) {
-    if (
-      page.sheet !== state.sheet ||
-      page.filter !== state.filter ||
-      page.query !== state.query
-    ) {
+  function renderViewport() {
+    if (!rowStream.metadata || cellResize) { return; }
+    const startedAt = performance.now();
+    const grid = activeGrid();
+    if (restoreOffset !== null) {
+      state.offset = Math.max(0, Math.min(restoreOffset, Math.max(0, rowStream.metadata.totalEntries - 1)));
+      logicalTop = rowStream.heightBefore(state.offset) + restoreIntra;
+      restoreOffset = null;
+      restoreIntra = 0;
+    }
+    logicalTop = rowStream.metrics(logicalTop, scrollViewportHeight()).logical;
+    columnWindow.setColumns(state.allColumns, currentSizes().column, state.diffMode === 'unified' ? 100 : 48, state.freezeColumns);
+    const width = state.diffMode === 'unified' ? grid.clientWidth : Math.max(elements.leftGrid.clientWidth, elements.rightGrid.clientWidth);
+    const columns = columnWindow.visible(restoreHorizontal ?? grid.scrollLeft, width);
+    if (columns.key !== state.columnView?.key) {
+      state.columnView = columns;
+      state.dataRequestId += 1;
+      rowStream.clearData();
+      rowStream.metadata.frozenRows = [];
+      rowStream.batchSize = Math.max(4, Math.min(128, Math.floor(6000 / Math.max(1, columns.columns.length * 2))));
+      viewportKey = '';
+    } else { state.columnView = columns; }
+    const range = rowStream.range(logicalTop, scrollViewportHeight());
+    rowStream.ensure(range.start, range.end);
+    const key = `${range.start}:${range.end}:${columns.key}:${state.diffMode}:${state.findText}`;
+    if (viewportKey === key) {
+      updateVirtualSpacers(state.rowData);
+      syncPhysicalScroll();
+      updateRowRange(range);
+      persistState();
       return;
     }
-    if (state.autoSelectFilter) {
-      state.autoSelectFilter = false;
-      if (page.totalRows === 0 && !state.query.trim() && page.filterCounts.changed > 0) {
-        state.filter = page.filterCounts.modified === 0 && page.filterCounts.removed === 0 ? 'added'
-          : page.filterCounts.modified === 0 && page.filterCounts.added === 0 ? 'removed' : 'changed';
-        state.page = 0;
-        updateFilterButtons();
-        requestPage();
-        return;
+    viewportKey = key;
+    const entries = [];
+    for (let position = range.start; position < range.end; position += 1) {
+      entries.push({ ...(rowStream.entry(position) || { kind: 'loading' }), position });
+    }
+    const rows = entries.filter((entry) => entry.kind === 'row').map((entry) => entry.row);
+    state.rowData = { ...rowStream.metadata, columns: columns.columns, slots: columns.slots, entries, rows,
+      contextRows: entries.filter((entry) => entry.kind === 'row' && entry.context).map((entry) => entry.row), range };
+    renderGrids(state.rowData);
+    elements.rowLoading.hidden = !entries.some((entry) => entry.kind === 'loading');
+    for (const pane of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) { pane.removeAttribute('aria-busy'); }
+    elements.app.classList.remove('loading');
+    updateRowRange(range);
+    persistState();
+    if (!firstRowsRendered) {
+      firstRowsRendered = true;
+      vscode.postMessage({ type: 'timing', stage: 'firstRowsRender', durationMs: performance.now() - startedAt });
+    }
+  }
+
+  function syncPhysicalScroll() {
+    const metrics = rowStream.metrics(logicalTop, scrollViewportHeight());
+    logicalTop = metrics.logical;
+    const left = restoreHorizontal ?? activeGrid().scrollLeft;
+    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+      if (grid.clientWidth) {
+        const headerVisible = state.rowData?.frozenRows.some((row) => row.index === 0) || state.rowData?.entries.some((entry) =>
+          entry.kind === 'row' && entry.row.index === 0 && rowStream.heightBefore(entry.position + 1) > logicalTop);
+        grid.classList.toggle('header-visible', Boolean(headerVisible));
+        writeScroll(grid, metrics.physical, left);
       }
     }
-    const renderStartedAt = performance.now();
-    state.page = page.page;
-    state.pageData = page;
-    updateFilterButtons(page.filterCounts);
-    elements.filterSummary.textContent = `${page.totalRows} matching rows · ${page.columns.length}/${page.totalColumns} columns`;
-    const hiddenColumns = page.totalColumns - page.columns.length;
-    if (hiddenColumns > 0) {
-      const showColumns = document.createElement('button');
-      showColumns.className = 'show-hidden-columns';
-      showColumns.textContent = `${hiddenColumns} columns hidden · Show all`;
-      showColumns.addEventListener('click', () => {
-        state.expandedColumns = Array.from({ length: page.totalColumns }, (_, index) => index);
-        clearInspector();
-        requestPage();
-      });
-      elements.filterSummary.append(' · ', showColumns);
-    }
-    elements.leftGrid.removeAttribute('aria-busy');
-    elements.rightGrid.removeAttribute('aria-busy');
-    elements.unifiedGrid.removeAttribute('aria-busy');
-    renderGrids(page);
-    updatePagination(page);
-    elements.app.classList.remove('loading');
-    persistState();
-    if (!firstPageRendered) {
-      firstPageRendered = true;
-      vscode.postMessage({ type: 'timing', stage: 'firstPageRender', durationMs: performance.now() - renderStartedAt });
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        vscode.postMessage({ type: 'timing', stage: 'firstPageFrame', durationMs: performance.now() - renderStartedAt });
-      }));
-    }
+    restoreHorizontal = null;
   }
 
-  function renderGrids(page) {
-    hideTooltip();
-    if (state.diffMode === 'unified') {
-      elements.leftGrid.replaceChildren();
-      elements.rightGrid.replaceChildren();
-      elements.unifiedGrid.replaceChildren(createUnifiedTable(page));
-    } else {
-      elements.unifiedGrid.replaceChildren();
-      elements.leftGrid.replaceChildren(createTable(page, 'left'));
-      elements.rightGrid.replaceChildren(createTable(page, 'right'));
+  function renderGrids(data) {
+    const focused = document.activeElement;
+    const handle = focused?.closest('.cell-resizer');
+    const focusedGrid = focused?.closest('.grid-scroll');
+    const anchor = rowStream.indexAt(logicalTop);
+    const intra = logicalTop - rowStream.heightBefore(anchor);
+    const metrics = rowStream.metrics(logicalTop, scrollViewportHeight());
+    const atBottom = metrics.logicalMax > 0 && metrics.logicalMax - logicalTop < 2;
+    if (state.diffMode === 'unified') { updateTable(data, 'unified', elements.unifiedGrid); }
+    else {
+      updateTable(data, 'left', elements.leftGrid);
+      updateTable(data, 'right', elements.rightGrid);
     }
-    renderEmptyState(page);
-    elements.leftGrid.scrollTop = 0;
-    elements.rightGrid.scrollTop = 0;
-    elements.leftGrid.scrollLeft = 0;
-    elements.rightGrid.scrollLeft = 0;
-    elements.unifiedGrid.scrollTop = 0;
-    elements.unifiedGrid.scrollLeft = 0;
+    renderEmptyState(data);
     applyCellSizes();
+    for (const row of activeGrid().querySelectorAll('tr[data-position]')) {
+      rowStream.measure(Number(row.dataset.position), row.getBoundingClientRect().height);
+    }
     applyFrozenPanes();
-    if (state.preserveScroll) {
-      [elements.leftGrid, elements.rightGrid, elements.unifiedGrid].forEach((grid, index) => {
-        grid.scrollTop = state.preserveScroll[index].top;
-        grid.scrollLeft = state.preserveScroll[index].left;
-      });
-      state.preserveScroll = null;
-    } else { focusSelectedCell(page); }
+    logicalTop = atBottom ? rowStream.metrics(Infinity, scrollViewportHeight()).logicalMax
+      : rowStream.heightBefore(anchor) + intra;
+    updateVirtualSpacers(data);
+    syncPhysicalScroll();
+    if (state.pendingFocus) { focusSelectedCell(data); }
+    highlightSelection();
+    if (handle && focusedGrid && !handle.isConnected) {
+      focusedGrid.querySelector(`[data-resize-kind="${handle.dataset.resizeKind}"][data-resize-index="${handle.dataset.resizeIndex}"]`)
+        ?.focus({ preventScroll: true });
+    }
   }
 
-  function renderEmptyState(page) {
-    const empty = page.rows.length === 0;
+  function highlightSelection() {
+    for (const cell of elements.gridShell.querySelectorAll('.selected, .selected-row')) {
+      cell.classList.remove('selected', 'selected-row');
+    }
+    const target = state.selectedCell;
+    if (!target) { return; }
+    const selector = target.unit === 'row' ? `td[data-row="${target.row}"]`
+      : `td[data-row="${target.row}"][data-column="${target.column}"]`;
+    for (const cell of elements.gridShell.querySelectorAll(selector)) {
+      if (target.unit === 'row') { cell.parentElement.classList.add('selected-row'); }
+      if (Number(cell.dataset.column) === target.column) { cell.classList.add('selected'); }
+    }
+  }
+
+  function renderEmptyState(data) {
+    const empty = data.totalRows === 0;
     elements.emptyState.hidden = !empty;
-    elements.previousChange.disabled = empty;
-    elements.nextChange.disabled = empty;
+    updateChangePosition();
     if (!empty) { return; }
-    const sheet = state.summary.sheets.find((candidate) => candidate.name === page.sheet);
+    const sheet = state.summary.sheets.find((candidate) => candidate.name === data.sheet);
     const hasChanges = sheet && sheet.status !== 'unchanged';
-    const searching = page.query.trim().length > 0;
-    const unchanged = sheet && !hasChanges && !searching && page.filter !== 'all';
+    const searching = data.query.trim().length > 0;
+    const unchanged = sheet && !hasChanges && !searching && data.filter !== 'all';
     elements.emptyState.classList.toggle('unchanged', Boolean(unchanged));
     elements.emptyIcon.textContent = unchanged ? '✓' : '⌕';
     const filterLabels = { modified: 'modified values', added: 'additions', removed: 'removals', changed: 'changes', all: 'rows' };
     elements.emptyTitle.textContent = unchanged ? 'This worksheet has no changes'
       : searching ? 'No results for this search and filter'
-      : page.filter === 'all' ? 'This worksheet has no rows'
-      : `No ${filterLabels[page.filter]} match this filter`;
+      : data.filter === 'all' ? 'This worksheet has no rows'
+      : `No ${filterLabels[data.filter]} match this filter`;
     const changes = [];
     if (hasChanges) {
       for (const [key, label] of [['added', 'added'], ['removed', 'removed'], ['changed', 'renamed']]) {
@@ -423,9 +602,9 @@
       }
       if (!changes.length) { changes.push(`${totalChanges(sheet.rowChanges)} changed rows`); }
     }
-    const explanation = page.filter === 'modified' ? 'Modified only includes edits to existing values.'
-      : page.filter === 'added' ? 'Added includes new rows, columns, and cell values.'
-      : page.filter === 'removed' ? 'Removed includes deleted rows, columns, and cell values.' : '';
+    const explanation = data.filter === 'modified' ? 'Modified only includes edits to existing values.'
+      : data.filter === 'added' ? 'Added includes new rows, columns, and cell values.'
+      : data.filter === 'removed' ? 'Removed includes deleted rows, columns, and cell values.' : '';
     elements.emptyDetail.textContent = hasChanges
       ? `This worksheet still has ${changes.join(' · ')}. ${searching ? 'Clear the search or change the filter.' : explanation}`
       : unchanged ? 'The compared worksheet values are identical.'
@@ -437,10 +616,13 @@
     return Number.isFinite(Number(value)) ? Math.max(0, Math.min(20, Math.trunc(Number(value)))) : 0;
   }
 
-  function displayRows(page) {
-    const frozen = new Set(page.frozenRows.map((row) => row.index));
-    const rows = new Map([...page.contextRows, ...page.rows].map((row) => [row.index, row]));
-    return [...page.frozenRows, ...[...rows.values()].filter((row) => !frozen.has(row.index)).sort((a, b) => a.index - b.index)];
+  function displayRows(data) {
+    return [...data.frozenRows, ...data.rows];
+  }
+
+  function findRow(rowIndex) {
+    return (state.rowData && displayRows(state.rowData).find((row) => row.index === rowIndex)) ||
+      (state.selectedRow?.index === rowIndex ? state.selectedRow : null);
   }
 
   function matchesCellFilter(status) {
@@ -491,23 +673,13 @@
     elements.freezeNote.textContent = limited ? 'Freeze limited to visible pane size' : '';
   }
 
-  function focusSelectedCell(page) {
-    const target = state.pendingFocus || state.selectedCell;
-    if (!target) { return; }
-    if (!displayRows(page).some((row) => row.index === target.row) ||
-      !page.columns.some((column) => column.index === target.column)) {
-      clearInspector();
-      return;
-    }
-    if (target.unit === 'row') {
-      inspectRow(target.row, target.column, target.side);
-    } else {
-      inspectCell(target.row, target.column, target.side);
-    }
-    for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
-      grid.querySelector(`td[data-row="${target.row}"][data-column="${target.column}"]`)
-        ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
+  function focusSelectedCell(data) {
+    const target = state.pendingFocus;
+    if (!target || !data.columns.some((column) => column.index === target.column) ||
+      !displayRows(data).some((row) => row.index === target.row)) { return; }
+    if (target.unit === 'row') { inspectRow(target.row, target.column, target.side); }
+    else { inspectCell(target.row, target.column, target.side); }
+    if (target.keyboard) { activeGrid().focus({ preventScroll: true }); }
     state.pendingFocus = null;
   }
 
@@ -523,10 +695,10 @@
     handle.className = `cell-resizer ${kind}-resizer`;
     handle.dataset.resizeKind = kind;
     handle.dataset.resizeIndex = String(index);
-    handle.tabIndex = 0;
+    handle.tabIndex = -1;
     handle.setAttribute('role', 'separator');
     handle.setAttribute('aria-orientation', kind === 'column' ? 'vertical' : 'horizontal');
-    handle.setAttribute('aria-label', `Resize ${kind}; drag or use arrow keys, double-click to reset`);
+    handle.setAttribute('aria-label', `Resize ${kind}; drag or use arrow keys, double-click to ${kind === 'column' ? 'fit contents' : 'reset height'}`);
     return handle;
   }
 
@@ -553,6 +725,8 @@
         cellResizeFrame = null;
         applyCellSizes();
         applyFrozenPanes();
+        viewportKey = '';
+        scheduleViewport();
       });
     }
   }
@@ -562,195 +736,173 @@
     const expanded = new Set(state[key]);
     for (let index = start; index < Math.min(end, start + 50); index += 1) { expanded.add(index); }
     state[key] = [...expanded];
-    state.preserveScroll = [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]
-      .map((grid) => ({ top: grid.scrollTop, left: grid.scrollLeft }));
+    captureAnchor();
     clearInspector();
-    requestPage();
+    requestRows();
   }
 
   function gapButton(kind, start, end) {
     const button = document.createElement('button');
     button.className = 'expand-gap';
     const count = end - start;
-    button.textContent = kind === 'columns' ? `+${count}` : `${count} ${kind} hidden · ${count > 50 ? 'Show next 50' : 'Expand'}`;
+    const label = document.createElement('span');
+    label.className = 'gap-label';
+    label.textContent = `${formatNumber(count)} hidden ${pluralize(kind === 'rows' ? 'row' : 'column', count)}`;
+    const action = document.createElement('span');
+    action.className = 'gap-action';
+    action.textContent = count > 50 ? 'Show next 50' : 'Show';
+    button.append(label, action);
     button.setAttribute('aria-label', `Expand ${kind} ${start + 1} through ${Math.min(end, start + 50)}`);
     setTooltip(button, kind === 'rows'
-      ? 'Rows outside this filter or page. Expanding shows context without changing matching counts.'
+      ? 'Rows hidden by the current filter. Expand to see their values without changing the matching counts.'
       : `${count} columns outside this focus hidden. Click to expand${count > 50 ? ' the next 50' : ''} and see their original values.`);
     button.addEventListener('click', () => expandRange(kind, start, end));
     return button;
   }
 
-  function addCollapsedRanges(table, page) {
-    if ((!state.focusChanges && page.filter === 'all') || page.rows.length === 0) { return; }
-    const body = table.tBodies[0];
-    const displayed = [...body.rows];
-    let nextRow = 0;
-    const insertGap = (start, end, before) => {
-      if (end <= start) { return; }
-      const row = document.createElement('tr');
-      row.className = 'row-gap';
-      const cell = document.createElement('td');
-      cell.colSpan = table.tHead.rows[0].cells.length;
-      cell.append(gapButton('rows', start, end));
-      row.append(cell);
-      body.insertBefore(row, before);
-    };
-    for (const row of displayed) {
-      const index = Number(row.dataset.row);
-      insertGap(nextRow, index, row);
-      nextRow = index + 1;
-    }
-    insertGap(nextRow, page.sheetRows, null);
+  function updateVirtualSpacers(data) {
+    if (!data) { return; }
+    const metrics = rowStream.metrics(logicalTop, scrollViewportHeight());
+    const top = rowStream.heightBefore(data.range.start) - metrics.shift;
+    const bottom = metrics.extent - (rowStream.heightBefore(data.range.end) - metrics.shift);
+    for (const [grid, renderer] of gridRenderers) { if (grid.clientWidth) { renderer.spacers(top, bottom); } }
   }
 
-  function createTable(page, side) {
-    const table = document.createElement('table');
-    table.className = 'diff-table';
+  function columnSpacer(width, tag = 'td') {
+    const cell = document.createElement(tag);
+    cell.className = 'column-spacer';
+    for (const property of ['width', 'minWidth', 'maxWidth']) { cell.style[property] = `${width}px`; }
+    cell.setAttribute('aria-hidden', 'true');
+    return cell;
+  }
+
+  function updateTable(data, side, grid) {
+    const slots = data.slots;
+    const schema = `${data.sheet}:${side}:${slots.map((slot) => slot.column ? slot.column.index : `w${slot.width}`).join(',')}`;
+    const entries = [
+      ...data.frozenRows.map((row) => ({ kind: 'row', row, frozen: true })),
+      { kind: 'spacer', edge: 'top' }, ...data.entries, { kind: 'spacer', edge: 'bottom' }
+    ];
+    gridRenderers.get(grid).render(schema, `${state.filter}:${state.findText}`, entries,
+      () => createTableHeader(data, side), (entry, count) => createTableRow(entry, data, side, count), slots.length + 1);
+  }
+
+  function createTableHeader(data, side) {
     const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
+    const row = document.createElement('tr');
     const corner = document.createElement('th');
     corner.className = 'row-number';
     corner.textContent = '#';
-    headRow.append(corner);
-    for (const column of page.columns) {
-      const th = document.createElement('th');
-      th.className = `data-column column-${columnHeaderStatus(column)}`;
-      th.dataset.column = String(column.index);
-      th.textContent = column[`${side}Label`] ?? '∅';
-      setTooltip(th, columnTooltip(column));
-      th.append(createResizeHandle('column', column.index));
-      headRow.append(th);
+    row.append(corner);
+    for (const slot of data.slots) {
+      if (!slot.column) { row.append(columnSpacer(slot.width, 'th')); continue; }
+      const column = slot.column;
+      const cell = document.createElement('th');
+      cell.className = `data-column column-${columnHeaderStatus(column)}`;
+      cell.dataset.column = String(column.index);
+      const address = document.createElement('span');
+      address.textContent = side === 'unified' ? column.label : column[`${side}Label`] ?? '∅';
+      cell.append(address);
+      if (column.title) {
+        const title = document.createElement('span');
+        title.className = 'column-title';
+        title.textContent = column.title;
+        cell.append(title);
+      }
+      setTooltip(cell, `${columnTooltip(column)}${column.title ? ` · ${column.title}` : ''}`);
+      cell.append(createResizeHandle('column', column.index));
+      row.append(cell);
     }
-    head.append(headRow);
-    table.append(head);
+    head.append(row);
+    return head;
+  }
 
-    const body = document.createElement('tbody');
-    for (const row of displayRows(page)) {
-      const tr = document.createElement('tr');
-      tr.dataset.row = String(row.index);
-      if (!page.rows.some((match) => match.index === row.index)) { tr.classList.add('context-row'); }
-      if (page.frozenRows.some((frozen) => frozen.index === row.index)) { tr.dataset.frozenRow = 'true'; }
-      const rowNumber = document.createElement('th');
-      rowNumber.scope = 'row';
-      rowNumber.className = `row-number row-${rowHeaderStatus(row)}`;
-      rowNumber.textContent = row[`${side}Index`] === undefined ? '∅' : String(row[`${side}Index`] + 1);
-      setTooltip(rowNumber, rowAddress(row));
-      rowNumber.append(createResizeHandle('row', row.index));
-      tr.append(rowNumber);
-
-      const cellValues = row[side];
-      for (let index = 0; index < page.columns.length; index += 1) {
-        const value = cellValues[index];
-        const status = row.cells[index] || 'unchanged';
-        const cell = document.createElement('td');
-        const missingSide = row[`${side}Index`] === undefined || page.columns[index][`${side}Index`] === undefined;
-        cell.className = `data-column ${status}${missingSide ? ' missing-side' : ''}`;
-        if (!matchesCellFilter(status)) { cell.classList.add('filter-context'); }
-        cell.dataset.row = String(row.index);
-        cell.dataset.column = String(page.columns[index].index);
-        cell.dataset.side = side;
-        setCellTooltip(cell, page.columns[index], row, index);
-
+  function createTableRow(entry, data, side, columnCount) {
+    const tr = document.createElement('tr');
+    if (entry.kind !== 'row') {
+      const cell = document.createElement('td');
+      cell.colSpan = columnCount;
+      if (entry.kind === 'spacer') { tr.className = 'virtual-spacer'; tr.dataset.spacer = entry.edge; tr.setAttribute('aria-hidden', 'true'); }
+      else if (entry.kind === 'gap') { tr.className = 'row-gap'; tr.dataset.position = String(entry.position); cell.append(gapButton('rows', entry.start, entry.end)); }
+      else {
+        tr.className = 'loading-row';
+        cell.textContent = rowStream.failed.has(Math.floor(entry.position / rowStream.batchSize) * rowStream.batchSize) ? 'Could not load rows. Use Retry.' : 'Loading rows…';
+        cell.style.height = `${rowStream.heights[entry.position] || rowStream.defaultHeight}px`;
+      }
+      tr.append(cell);
+      return tr;
+    }
+    const row = entry.row;
+    tr.dataset.row = String(row.index);
+    tr.dataset.status = rowHeaderStatus(row);
+    const number = document.createElement('th');
+    number.className = `row-number row-${rowHeaderStatus(row)}`;
+    number.scope = 'row';
+    const before = row.leftIndex === undefined ? '∅' : String(row.leftIndex + 1);
+    const after = row.rightIndex === undefined ? '∅' : String(row.rightIndex + 1);
+    if (side === 'unified') {
+      if (row.leftIndex === undefined) { number.textContent = `+ ${after}`; }
+      else if (row.rightIndex === undefined) { number.textContent = `− ${before}`; }
+      else { number.textContent = before === after ? before : `${before} → ${after}`; }
+    } else {
+      number.textContent = side === 'left' ? before : after;
+    }
+    setTooltip(number, rowAddress(row));
+    number.append(createResizeHandle('row', row.index));
+    tr.append(number);
+    for (const slot of data.slots) {
+      if (!slot.column) { tr.append(columnSpacer(slot.width)); continue; }
+      const index = slot.position;
+      const column = slot.column;
+      const status = row.cells[index] || 'unchanged';
+      const cell = document.createElement('td');
+      const missing = side !== 'unified' && (row[`${side}Index`] === undefined || column[`${side}Index`] === undefined);
+      cell.className = `data-column ${status}${side === 'unified' ? ' unified-cell' : ''}${missing ? ' missing-side' : ''}`;
+      if (!matchesCellFilter(status)) { cell.classList.add('filter-context'); }
+      cell.dataset.row = String(row.index);
+      cell.dataset.column = String(column.index);
+      cell.dataset.side = side;
+      const query = state.findText.trim().toLocaleLowerCase();
+      if (query && [row.left[index]?.display, row.right[index]?.display, row.left[index]?.formula, row.right[index]?.formula]
+        .some((text) => text?.toLocaleLowerCase().includes(query))) { cell.classList.add('search-match'); }
+      setCellTooltip(cell, column, row, index);
+      if (side === 'unified') {
+        if (status === 'unchanged') { cell.append(createUnifiedValue(row.right[index] || row.left[index], 'current-value', '')); }
+        else {
+          if (row.left[index]) { cell.append(createUnifiedValue(row.left[index], 'before-value', '−')); }
+          if (row.right[index]) { cell.append(createUnifiedValue(row.right[index], 'after-value', '+')); }
+        }
+      } else {
         const content = document.createElement('div');
         content.className = 'cell-content';
         const text = document.createElement('span');
-        text.textContent = value?.display || '';
+        appendHighlightedText(text, row[side][index]?.display || '');
         content.append(text);
-        if (value?.formula) {
-          const formula = document.createElement('span');
-          formula.className = 'formula-mark';
-          formula.textContent = 'fx';
-          content.append(formula);
+        if (row[side][index]?.formula) {
+          const formula = document.createElement('span'); formula.className = 'formula-mark'; formula.textContent = 'fx'; content.append(formula);
         }
         cell.append(content);
-        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index, side));
-        cell.addEventListener('dblclick', () => openCellComparison(row.index, page.columns[index].index));
-        cell.addEventListener('contextmenu', () => {
-          inspectCell(row.index, page.columns[index].index, side);
-          selectCellContents(cell);
-        });
-        tr.append(cell);
       }
-      body.append(tr);
+      tr.append(cell);
     }
-    table.append(body);
-    addCollapsedRanges(table, page);
-    return table;
+    return tr;
   }
 
-  function createUnifiedTable(page) {
-    const table = document.createElement('table');
-    table.className = 'diff-table unified-table';
-    const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    const corner = document.createElement('th');
-    corner.className = 'row-number';
-    corner.textContent = '#';
-    headRow.append(corner);
-    for (const column of page.columns) {
-      const th = document.createElement('th');
-      th.className = `data-column column-${columnHeaderStatus(column)}`;
-      th.dataset.column = String(column.index);
-      th.textContent = column.label;
-      setTooltip(th, columnTooltip(column));
-      th.append(createResizeHandle('column', column.index));
-      headRow.append(th);
+  function appendHighlightedText(element, text) {
+    const query = state.findText.trim();
+    if (!query) { element.textContent = text; return; }
+    const lower = text.toLocaleLowerCase();
+    const needle = query.toLocaleLowerCase();
+    let position = 0;
+    let match;
+    while ((match = lower.indexOf(needle, position)) >= 0) {
+      element.append(document.createTextNode(text.slice(position, match)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(match, match + query.length);
+      element.append(mark);
+      position = match + query.length;
     }
-    head.append(headRow);
-    table.append(head);
-
-    const body = document.createElement('tbody');
-    for (const row of displayRows(page)) {
-      const tr = document.createElement('tr');
-      tr.dataset.row = String(row.index);
-      if (!page.rows.some((match) => match.index === row.index)) { tr.classList.add('context-row'); }
-      if (page.frozenRows.some((frozen) => frozen.index === row.index)) { tr.dataset.frozenRow = 'true'; }
-      const rowNumber = document.createElement('th');
-      rowNumber.scope = 'row';
-      rowNumber.className = `row-number row-${rowHeaderStatus(row)}`;
-      const beforeRow = row.leftIndex === undefined ? '∅' : String(row.leftIndex + 1);
-      const afterRow = row.rightIndex === undefined ? '∅' : String(row.rightIndex + 1);
-      rowNumber.textContent = beforeRow === afterRow ? beforeRow : `${beforeRow} → ${afterRow}`;
-      setTooltip(rowNumber, rowAddress(row));
-      rowNumber.append(createResizeHandle('row', row.index));
-      tr.append(rowNumber);
-
-      for (let index = 0; index < page.columns.length; index += 1) {
-        const left = row.left[index];
-        const right = row.right[index];
-        const status = row.cells[index] || 'unchanged';
-        const cell = document.createElement('td');
-        cell.className = `data-column unified-cell ${status}`;
-        if (!matchesCellFilter(status)) { cell.classList.add('filter-context'); }
-        cell.dataset.row = String(row.index);
-        cell.dataset.column = String(page.columns[index].index);
-        cell.dataset.side = 'unified';
-        setCellTooltip(cell, page.columns[index], row, index);
-
-        if (status === 'unchanged') {
-          cell.append(createUnifiedValue(right || left, 'current-value', ''));
-        } else {
-          if (left) {
-            cell.append(createUnifiedValue(left, 'before-value', '−'));
-          }
-          if (right) {
-            cell.append(createUnifiedValue(right, 'after-value', '+'));
-          }
-        }
-        cell.addEventListener('click', () => inspectCell(row.index, page.columns[index].index, 'unified'));
-        cell.addEventListener('dblclick', () => openCellComparison(row.index, page.columns[index].index));
-        cell.addEventListener('contextmenu', () => {
-          inspectCell(row.index, page.columns[index].index, 'unified');
-          selectCellContents(cell);
-        });
-        tr.append(cell);
-      }
-      body.append(tr);
-    }
-    table.append(body);
-    addCollapsedRanges(table, page);
-    return table;
+    element.append(document.createTextNode(text.slice(position)));
   }
 
   function createUnifiedValue(value, className, prefix) {
@@ -763,7 +915,7 @@
       content.append(marker);
     }
     const text = document.createElement('span');
-    text.textContent = value?.display || '';
+    appendHighlightedText(text, value?.display || '');
     content.append(text);
     if (value?.formula) {
       const formula = document.createElement('span');
@@ -775,9 +927,13 @@
   }
 
   function inspectCell(rowIndex, columnIndex, side) {
-    const comparison = getCellComparison(rowIndex, columnIndex);
-    if (!comparison) {
-      return;
+    const source = cellSource(rowIndex, columnIndex);
+    if (!source) { return; }
+    const comparison = cellComparison(source.columns[source.columnPosition], source.row, source.columnPosition);
+    if (state.changePosition && (state.changePosition.row !== rowIndex ||
+      state.navigationUnit === 'cell' && state.changePosition.column !== columnIndex)) {
+      state.changePosition = null;
+      updateChangePosition();
     }
     for (const selected of document.querySelectorAll('.diff-table td.selected')) {
       selected.classList.remove('selected');
@@ -790,6 +946,9 @@
     )) {
       cell.classList.add('selected');
     }
+    state.selectedRow = source.row;
+    state.selectedColumns = source.columns;
+    state.activeSide = side === 'left' ? 'left' : 'right';
     state.selectedCell = {
       row: rowIndex,
       column: columnIndex,
@@ -797,6 +956,12 @@
       side: side || (state.diffMode === 'unified' ? 'unified' : 'right')
     };
 
+    renderInspector(comparison);
+    persistState();
+  }
+
+  function renderInspector(comparison) {
+    if (!comparison) { return; }
     elements.cellInspector.replaceChildren();
     const addressElement = document.createElement('strong');
     addressElement.textContent = comparison.address;
@@ -806,6 +971,7 @@
     );
     elements.cellInspector.classList.add('has-selection');
     setComparisonTooltip(elements.cellInspector, comparison);
+    renderDetails();
   }
 
   function inspectRow(rowIndex, columnIndex, side) {
@@ -843,6 +1009,10 @@
   function setCellTooltip(cell, column, row, position) {
     const comparison = cellComparison(column, row, position);
     if (row.cells[position] !== 'unchanged') {
+      if (![row.left[position], row.right[position]].some((value) => value && (value.display || value.formula))) {
+        setTooltip(cell, `${comparison.address} · Empty cell`);
+        return;
+      }
       setComparisonTooltip(cell, comparison);
       return;
     }
@@ -852,17 +1022,21 @@
     if (!value.formula && value.raw === undefined) { cell.dataset.tooltipOverflow = 'true'; }
   }
 
+  function cellSource(rowIndex, columnIndex) {
+    const data = state.rowData;
+    let row = data && displayRows(data).find((entry) => entry.index === rowIndex);
+    let columns = data?.columns || [];
+    if (!row || !columns.some((column) => column.index === columnIndex)) {
+      row = state.selectedRow?.index === rowIndex ? state.selectedRow : null;
+      columns = state.selectedColumns;
+    }
+    const columnPosition = columns.findIndex((column) => column.index === columnIndex);
+    return row && columnPosition >= 0 ? { row, columns, columnPosition } : null;
+  }
+
   function getCellComparison(rowIndex, columnIndex) {
-    const page = state.pageData;
-    if (!page) {
-      return null;
-    }
-    const row = displayRows(page).find((candidate) => candidate.index === rowIndex);
-    const columnPosition = page.columns.findIndex((column) => column.index === columnIndex);
-    if (!row || columnPosition < 0) {
-      return null;
-    }
-    return cellComparison(page.columns[columnPosition], row, columnPosition);
+    const source = cellSource(rowIndex, columnIndex);
+    return source ? cellComparison(source.columns[source.columnPosition], source.row, source.columnPosition) : null;
   }
 
   function openCellComparison(rowIndex, columnIndex) {
@@ -870,6 +1044,10 @@
     if (!comparison) {
       return;
     }
+    showCellComparison(comparison);
+  }
+
+  function showCellComparison(comparison) {
     hideTooltip();
     activeDialogComparison = comparison;
     elements.cellComparisonAddress.textContent = comparison.address;
@@ -901,15 +1079,13 @@
 
   function selectedCellCopyText() {
     const selected = state.selectedCell;
-    const page = state.pageData;
-    if (!selected || !page) {
+    const data = state.rowData;
+    if (!selected || !data) {
       return null;
     }
-    const row = displayRows(page).find((candidate) => candidate.index === selected.row);
-    const columnPosition = page.columns.findIndex((column) => column.index === selected.column);
-    if (!row || columnPosition < 0) {
-      return null;
-    }
+    const source = cellSource(selected.row, selected.column);
+    if (!source) { return null; }
+    const { row, columnPosition } = source;
 
     const left = row.left[columnPosition];
     const right = row.right[columnPosition];
@@ -944,30 +1120,36 @@
     return Boolean(selection && !selection.isCollapsed && !selectionIsInsideSelectedCell(selection));
   }
 
-  function updatePagination(page) {
-    elements.pageLabel.textContent = `Page ${page.page + 1} of ${page.totalPages}`;
-    elements.previousPage.disabled = page.page <= 0;
-    elements.nextPage.disabled = page.page >= page.totalPages - 1;
-    if (page.totalRows === 0) {
-      elements.rowRange.textContent = 'Rows 0 of 0';
-    } else {
-      const start = page.page * page.pageSize + 1;
-      const end = Math.min(page.totalRows, start + page.rows.length - 1);
-      elements.rowRange.textContent = `Rows ${formatNumber(start)}–${formatNumber(end)} of ${formatNumber(page.totalRows)}`;
-    }
+  function updateRowRange(range) {
+    const data = state.rowData;
+    if (!data || data.totalRows === 0) { elements.rowRange.textContent = 'Rows 0 of 0'; return; }
+    const grid = activeGrid();
+    const bounds = grid.getBoundingClientRect();
+    const top = bounds.top + (parseFloat(grid.style.scrollPaddingTop) || 29);
+    const visible = [...grid.querySelectorAll('tr[data-position][data-row]')].filter((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > top && rect.top < bounds.bottom;
+    });
+    const first = visible[0] ? findRow(Number(visible[0].dataset.row)) : data.frozenRows[0];
+    const last = visible.length ? findRow(Number(visible[visible.length - 1].dataset.row)) : data.frozenRows[data.frozenRows.length - 1];
+    const sheet = state.summary.sheets.find((sheet) => sheet.name === state.sheet);
+    elements.rowRange.textContent = first && last
+      ? `Rows ${formatNumber(first.index + 1)}–${formatNumber(last.index + 1)} of ${formatNumber(sheet.rows)}`
+      : `${formatNumber(data.totalRows)} matching rows`;
+    state.offset = visible[0] ? Number(visible[0].dataset.position) : range.first;
   }
 
   function requestChange(direction) {
-    if (elements.leftGrid.hasAttribute('aria-busy')) { return; }
+    if (!rowStream.metadata) { return; }
     hideTooltip();
     state.navigationRequestId += 1;
     vscode.postMessage({
       type: 'requestChange',
-      focusChanges: state.focusChanges,
+      ...viewOptions(),
       requestId: state.navigationRequestId,
-      pageRequestId: state.requestId,
+      viewRequestId: state.requestId,
       sheet: state.sheet,
-      row: state.selectedCell?.row,
+      row: state.selectedCell?.row ?? state.rowData?.rows[0]?.index,
       column: state.selectedCell?.column,
       direction,
       unit: state.navigationUnit,
@@ -977,25 +1159,11 @@
   }
 
   function receiveNavigation(target) {
-    if (!target) {
-      showError('No changed cells match the current worksheet, filter, and search.');
-      return;
-    }
-    state.selectedCell = {
-      row: target.row,
-      column: target.column,
-      unit: state.navigationUnit,
-      side: state.selectedCell?.side || (state.diffMode === 'unified' ? 'unified' : 'right')
-    };
-    state.pendingFocus = state.selectedCell;
-    if (state.page !== target.page) { state.expandedRows = []; }
-    state.page = target.page;
-    if (state.pageData?.page === target.page && state.pageData.sheet === state.sheet &&
-      state.pageData.filter === state.filter && state.pageData.query === state.query) {
-      focusSelectedCell(state.pageData);
-    } else {
-      requestPage();
-    }
+    if (!target) { announce('No changes match this view. Try another filter or worksheet.'); return; }
+    state.changePosition = { ordinal: target.ordinal, total: target.total, row: target.row, column: target.column };
+    updateChangePosition();
+    if (target.wrapped) { announce(target.ordinal === 1 ? 'Back to the first change.' : 'Back to the last change.'); }
+    jumpToTarget(target, 'change');
   }
 
   function applyTheme(theme) {
@@ -1006,6 +1174,7 @@
   }
 
   function applyDiffMode(mode, rerender = true) {
+    if (rerender && rowStream.metadata) { captureAnchor(); }
     state.diffMode = mode === 'unified' ? 'unified' : 'sideBySide';
     if (state.selectedCell) {
       state.selectedCell.side = state.diffMode === 'unified'
@@ -1017,14 +1186,18 @@
         ? 'unified'
         : state.pendingFocus.side === 'left' ? 'left' : 'right';
     }
-    elements.diffModeSelect.value = state.diffMode;
+    for (const button of elements.diffModeSwitch.querySelectorAll('[data-mode]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === state.diffMode));
+    }
     elements.gridShell.classList.toggle('unified-mode', state.diffMode === 'unified');
     elements.columnLabels.classList.toggle('unified-mode', state.diffMode === 'unified');
     if (state.diffMode === 'sideBySide') {
       applySplitRatio();
     }
-    if (rerender && state.pageData) {
-      renderGrids(state.pageData);
+    if (rerender && rowStream.metadata) {
+      const selected = state.selectedCell;
+      restoreSelection = selected;
+      requestRows();
     }
     persistState();
   }
@@ -1059,6 +1232,7 @@
   }
 
   function refreshTextDiffViews() {
+    renderDetails();
     if (elements.cellComparisonDialog.open && activeDialogComparison) {
       renderCellComparisonDialog();
     }
@@ -1075,6 +1249,8 @@
 
   function applyNavigationUnit(unit) {
     state.navigationUnit = unit === 'row' ? 'row' : 'cell';
+    state.changePosition = null;
+    updateChangePosition();
     elements.navigationUnitSelect.value = state.navigationUnit;
     const label = state.navigationUnit === 'row' ? 'changed row' : 'changed cell';
     setTooltip(elements.previousChange, `Previous ${label}`);
@@ -1085,15 +1261,21 @@
   function updateFilterButtons(counts) {
     // Counts depend on the worksheet/search, not the active category. Keep them
     // while switching filters so button widths and disabled styles stay stable.
-    if (!counts && state.pageData?.sheet === state.sheet && state.pageData.query === state.query) {
-      counts = state.pageData.filterCounts;
+    if (!counts && state.rowData?.sheet === state.sheet && state.rowData.query === state.query) {
+      counts = state.rowData.filterCounts;
     }
     for (const button of document.querySelectorAll('.filter')) {
       const filter = button.dataset.filter;
       button.classList.toggle('active', filter === state.filter);
       button.setAttribute('aria-pressed', String(filter === state.filter));
-      const label = { all: 'All', changed: 'Changed', modified: 'Modified', added: 'Added', removed: 'Removed' }[filter];
-      button.textContent = counts ? `${label} (${counts[filter]})` : label;
+      const label = { all: 'All', changed: 'Changes', modified: 'Edits', added: 'Added', removed: 'Removed' }[filter];
+      button.replaceChildren(document.createTextNode(label));
+      if (counts) {
+        const count = document.createElement('span');
+        count.className = 'filter-count';
+        count.textContent = formatNumber(counts[filter]);
+        button.append(count);
+      }
       button.disabled = Boolean(counts && counts[filter] === 0 && filter !== state.filter);
       if (!button.dataset.baseTooltip) { button.dataset.baseTooltip = button.dataset.tooltip || label; }
       setTooltip(button, button.dataset.baseTooltip + (counts ? ` · ${counts[filter]} matching rows` : ''));
@@ -1103,10 +1285,13 @@
   function clearInspector() {
     hideTooltip();
     state.selectedCell = null;
+    state.selectedRow = null;
+    state.selectedColumns = [];
     state.pendingFocus = null;
-    elements.cellInspector.textContent = 'Select a cell to inspect its value and formula';
+    elements.cellInspector.textContent = 'Select a cell for details';
     elements.cellInspector.classList.remove('has-selection');
     setTooltip(elements.cellInspector, '');
+    renderDetails();
   }
 
   function showError(message) {
@@ -1117,10 +1302,174 @@
     }, 7000);
   }
 
+  function captureAnchor() {
+    if (!rowStream.metadata) { return; }
+    state.offset = rowStream.indexAt(logicalTop);
+    restoreIntra = logicalTop - rowStream.heightBefore(state.offset);
+    restoreHorizontal = activeGrid().scrollLeft;
+  }
+
+  function cancelPendingNavigation() {
+    state.pendingFocus = null;
+    state.navigationRequestId += 1;
+    state.locationRequestId += 1;
+    state.findRequestId += 1;
+    if (elements.findStatus.textContent === 'Finding…') { elements.findStatus.textContent = ''; }
+  }
+
+  function jumpToTarget(target, source) {
+    const side = state.diffMode === 'unified' ? 'unified' : state.activeSide;
+    state.selectedCell = { row: target.row, column: target.column, side, unit: source === 'change' ? state.navigationUnit : 'cell' };
+    state.pendingFocus = { ...state.selectedCell, keyboard: source === 'location' };
+    columnWindow.setColumns(state.allColumns, currentSizes().column, state.diffMode === 'unified' ? 100 : 48, state.freezeColumns);
+    const grid = activeGrid();
+    const left = columnWindow.leftOf(target.column);
+    const width = currentSizes().column[target.column] || 156;
+    const pinned = parseFloat(grid.style.scrollPaddingLeft) || 48;
+    if (target.column >= state.freezeColumns && (left < grid.scrollLeft + pinned || left + width > grid.scrollLeft + grid.clientWidth)) {
+      restoreHorizontal = Math.max(0, left - pinned);
+    }
+    if (target.offset >= 0) {
+      const top = rowStream.heightBefore(target.offset);
+      const bottom = rowStream.heightBefore(target.offset + 1);
+      if (top < logicalTop) { logicalTop = top; }
+      else if (bottom > logicalTop + scrollViewportHeight()) { logicalTop = bottom - scrollViewportHeight(); }
+    }
+    restoreOffset = null;
+    viewportKey = '';
+    scheduleViewport();
+  }
+
+  function requestLocation(location) {
+    if (!rowStream.metadata) { return; }
+    state.locationRequestId += 1;
+    vscode.postMessage({ type: 'requestLocate', requestId: state.locationRequestId, viewRequestId: state.requestId,
+      sheet: state.sheet, location, filter: state.filter, query: state.query, ...viewOptions() });
+  }
+
+  function requestFind(direction, includeCurrent = false) {
+    if (!rowStream.metadata || !state.findText.trim()) { return; }
+    state.findRequestId += 1;
+    elements.findStatus.textContent = 'Finding…';
+    vscode.postMessage({ type: 'requestFind', requestId: state.findRequestId, viewRequestId: state.requestId,
+      sheet: state.sheet, text: state.findText, row: state.selectedCell?.row ?? state.rowData?.rows[0]?.index,
+      column: state.selectedCell?.column, direction, includeCurrent, filter: state.filter, query: state.query, ...viewOptions() });
+  }
+
+  function applyMatchFilter() {
+    captureAnchor();
+    state.query = state.matchOnly ? state.findText : '';
+    state.offset = 0;
+    restoreIntra = 0;
+    state.expandedRows = [];
+    state.expandedColumns = [];
+    clearInspector();
+    requestRows();
+  }
+
+  function syncFocusButton() {
+    const label = state.focusChanges ? 'Restore the rows and columns allowed by this filter' : 'Hide unrelated rows and columns';
+    elements.focusChanges.setAttribute('aria-pressed', String(state.focusChanges));
+    elements.focusChanges.setAttribute('aria-label', label);
+    setTooltip(elements.focusChanges, label);
+  }
+
+  function updateChangePosition() {
+    const changes = rowStream.metadata?.changes;
+    const unit = state.navigationUnit === 'row' ? 'row' : 'cell';
+    const total = state.navigationUnit === 'row' ? changes?.rows : changes?.cells;
+    elements.previousChange.disabled = elements.nextChange.disabled = !total;
+    elements.changePosition.textContent = !total ? 'No changes' : state.changePosition
+      ? `${state.changePosition.ordinal} / ${formatNumber(total)} ${pluralize(unit, total)}`
+      : `${formatNumber(total)} changed ${pluralize(unit, total)}`;
+  }
+
+  function changeSheet(direction) {
+    const sheets = getVisibleSheets();
+    const index = sheets.findIndex((sheet) => sheet.name === state.sheet);
+    const step = direction === 'next' ? 1 : -1;
+    for (let distance = 1; distance < sheets.length; distance += 1) {
+      const next = sheets[(index + step * distance + sheets.length) % sheets.length];
+      const counts = state.filter === 'modified' ? next.cellChanges.changed : state.filter === 'added' ? next.cellChanges.added + next.rowChanges.added
+        : state.filter === 'removed' ? next.cellChanges.removed + next.rowChanges.removed : totalChanges(next.cellChanges) + totalChanges(next.rowChanges);
+      if (counts) {
+        pendingSheetDirection = direction;
+        selectSheet(next.name, true);
+        restoreSelection = null;
+        announce(`Worksheet: ${next.name}`);
+        return;
+      }
+    }
+    announce('No other worksheets match this change filter.');
+  }
+
+  function announce(message) {
+    window.clearTimeout(noticeTimer);
+    elements.navigationNotice.textContent = message;
+    elements.navigationNotice.hidden = false;
+    noticeTimer = window.setTimeout(() => { elements.navigationNotice.hidden = true; }, 4000);
+  }
+
+  function setDetailsOpen(open) {
+    const selected = state.selectedCell;
+    const grid = activeGrid();
+    const cell = selected && grid.querySelector(`td[data-row="${selected.row}"][data-column="${selected.column}"]`);
+    const bounds = cell?.getBoundingClientRect();
+    const gridBounds = grid.getBoundingClientRect();
+    const wasVisible = bounds && bounds.bottom > gridBounds.top && bounds.top < gridBounds.bottom;
+    const position = state.rowData?.entries.find((entry) => entry.kind === 'row' && entry.row.index === selected?.row)?.position;
+    state.detailsOpen = open;
+    elements.detailsPanel.hidden = !open;
+    elements.toggleDetails.setAttribute('aria-pressed', String(open));
+    renderDetails();
+    if (open && wasVisible && position !== undefined) {
+      logicalTop = Math.max(logicalTop, rowStream.heightBefore(position + 1) - scrollViewportHeight());
+      viewportKey = '';
+    }
+    scheduleViewport();
+    persistState();
+  }
+
+  function renderDetails() {
+    if (!state.detailsOpen) { return; }
+    const selected = state.selectedCell;
+    const comparison = selected && getCellComparison(selected.row, selected.column);
+    elements.detailsAddress.textContent = comparison?.address || 'Select a cell';
+    elements.detailsContent.replaceChildren();
+    if (comparison) { elements.detailsContent.append(createTextComparisonLayout(comparison, 'dialog')); }
+    else { elements.detailsContent.textContent = 'Select a cell to compare its before and after values.'; }
+  }
+
+  function handleGridKey(event) {
+    if (event.target.closest('.cell-resizer') || event.altKey || !rowStream.metadata) { return; }
+    state.activeSide = event.currentTarget === elements.leftGrid ? 'left' : 'right';
+    if (event.key === 'Enter' && state.selectedCell) {
+      event.preventDefault(); openCellComparison(state.selectedCell.row, state.selectedCell.column); return;
+    }
+    const keys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End'];
+    if (!keys.includes(event.key)) { return; }
+    event.preventDefault();
+    cancelPendingNavigation();
+    const selected = state.selectedCell;
+    const row = selected?.row ?? state.rowData?.rows.find((entry) => rowStream.entry(state.offset)?.row?.index === entry.index)?.index ?? state.rowData?.rows[0]?.index;
+    const column = selected?.column ?? state.columnView?.columns[0]?.index;
+    const pageRows = Math.max(1, Math.floor(scrollViewportHeight() / rowStream.defaultHeight) - 1);
+    const rowDelta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : event.key === 'PageUp' ? -pageRows : event.key === 'PageDown' ? pageRows : 0;
+    const columnDelta = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : event.key === 'Home' ? -state.allColumns.length : event.key === 'End' ? state.allColumns.length : 0;
+    requestLocation({ row, column, rowDelta, columnDelta,
+      ...((event.ctrlKey || event.metaKey) && (event.key === 'Home' || event.key === 'End') ? { edge: event.key === 'Home' ? 'first' : 'last' } : {}) });
+  }
+
   function persistState() {
+    window.clearTimeout(persistTimer);
+    persistTimer = window.setTimeout(flushState, 120);
+  }
+
+  function flushState() {
+    saveSheetPosition();
     vscode.setState({
       sheet: state.sheet,
-      page: state.page,
+      offset: state.offset,
       filter: state.filter,
       query: state.query,
       splitRatio: state.splitRatio,
@@ -1133,7 +1482,8 @@
       freezeColumns: state.freezeColumns,
       focusChanges: state.focusChanges,
       focusPreferenceVersion: 2,
-      sheetSizes: state.sheetSizes
+      sheetSizes: state.sheetSizes,
+      sheetViews: state.sheetViews, findText: state.findText, matchOnly: state.matchOnly, detailsOpen: state.detailsOpen
     });
   }
 
@@ -1175,62 +1525,20 @@
     const address = document.createElement('strong');
     address.className = 'tooltip-comparison-address';
     address.textContent = comparison.address;
-    header.append(address, createTooltipTextDiffControls());
+    const expand = document.createElement('button');
+    expand.className = 'tooltip-expand';
+    expand.type = 'button';
+    expand.textContent = 'Full comparison ↗';
+    expand.addEventListener('click', () => showCellComparison(comparison));
+    header.append(address, expand);
     return [header, createTextComparisonLayout(comparison, 'tooltip')];
-  }
-
-  function createTooltipTextDiffControls() {
-    const controls = document.createElement('div');
-    controls.className = 'text-diff-controls tooltip-text-diff-controls';
-    controls.append(
-      createTooltipTextDiffControl(
-        'Granularity',
-        'textDiffGranularity',
-        state.textDiffGranularity,
-        [
-          ['character', 'Characters'],
-          ['word', 'Words'],
-          ['line', 'Lines']
-        ]
-      ),
-      createTooltipTextDiffControl(
-        'Layout',
-        'textDiffLayout',
-        state.textDiffLayout,
-        [
-          ['sideBySide', 'Side by side'],
-          ['inline', 'Inline'],
-          ['stacked', 'Stacked']
-        ]
-      )
-    );
-    return controls;
-  }
-
-  function createTooltipTextDiffControl(labelText, setting, value, options) {
-    const label = document.createElement('label');
-    label.className = 'text-diff-control';
-    const caption = document.createElement('span');
-    caption.textContent = labelText;
-    const select = document.createElement('select');
-    select.setAttribute('aria-label', `Text diff ${labelText.toLocaleLowerCase()}`);
-    for (const [optionValue, optionLabel] of options) {
-      const option = document.createElement('option');
-      option.value = optionValue;
-      option.textContent = optionLabel;
-      select.append(option);
-    }
-    select.value = value;
-    select.addEventListener('change', () => updateTextDiffSetting(setting, select.value));
-    label.append(caption, select);
-    return label;
   }
 
   function createTextComparisonLayout(comparison, variant) {
     const tooltip = variant === 'tooltip';
     const container = document.createElement('div');
-    container.className = `${tooltip ? 'tooltip-comparison-grid' : 'cell-comparison-content'} ${textDiffLayoutClass()}`;
-    if (state.textDiffLayout === 'inline') {
+    container.className = tooltip ? 'tooltip-comparison-grid side-by-side-layout' : `cell-comparison-content ${textDiffLayoutClass()}`;
+    if (!tooltip && state.textDiffLayout === 'inline') {
       container.append(createInlineComparisonPane(comparison, tooltip));
       return container;
     }
@@ -1594,7 +1902,7 @@
   function comparisonAddress(column, row) {
     const before = column.leftLabel === undefined || row.leftIndex === undefined ? '∅' : `${column.leftLabel}${row.leftIndex + 1}`;
     const after = column.rightLabel === undefined || row.rightIndex === undefined ? '∅' : `${column.rightLabel}${row.rightIndex + 1}`;
-    return before === after ? before : `Before ${before} → After ${after}`;
+    return before === after ? before : before === '∅' ? `${after} · Added` : after === '∅' ? `${before} · Removed` : `${before} → ${after}`;
   }
 
   function columnHeaderStatus(column) {
@@ -1618,6 +1926,22 @@
       ? 'Removed column' : column.status === 'changed' ? 'Renamed column'
       : column.leftIndex !== column.rightIndex ? 'Column position changed' : 'Column';
     return `${label} · Before: ${column.leftLabel ?? '∅'} · After: ${column.rightLabel ?? '∅'}`;
+  }
+
+  for (const kind of ['click', 'dblclick', 'contextmenu']) {
+    elements.gridShell.addEventListener(kind, (event) => {
+      if (event.target.closest('.cell-resizer')) { return; }
+      const cell = event.target.closest('td[data-row][data-column]');
+      if (!cell) { return; }
+      const row = Number(cell.dataset.row), column = Number(cell.dataset.column);
+      if (kind === 'dblclick') { openCellComparison(row, column); }
+      else {
+        cancelPendingNavigation();
+        inspectCell(row, column, cell.dataset.side);
+        if (kind === 'contextmenu') { selectCellContents(cell); }
+        else { activeGrid().focus({ preventScroll: true }); }
+      }
+    });
   }
 
   elements.gridShell.addEventListener('pointerdown', (event) => {
@@ -1645,6 +1969,8 @@
     cellResize = null;
     if (handle.hasPointerCapture(event.pointerId)) { handle.releasePointerCapture(event.pointerId); }
     document.body.classList.remove('resizing-column', 'resizing-row');
+    viewportKey = '';
+    scheduleViewport();
     persistState();
   };
   elements.gridShell.addEventListener('pointerup', finishCellResize);
@@ -1655,9 +1981,26 @@
     if (!handle) { return; }
     event.preventDefault();
     event.stopPropagation();
-    delete currentSizes()[handle.dataset.resizeKind][handle.dataset.resizeIndex];
+    const kind = handle.dataset.resizeKind;
+    const index = Number(handle.dataset.resizeIndex);
+    if (kind === 'column') {
+      const cells = [...activeGrid().querySelectorAll(`[data-column="${index}"] .cell-content > span:first-child, [data-column="${index}"] .unified-value > span:not(.change-marker), th[data-column="${index}"]`)];
+      const measure = document.createElement('span');
+      measure.className = 'column-measure';
+      document.body.append(measure);
+      let width = 64;
+      for (const cell of cells) {
+        measure.style.font = getComputedStyle(cell).font;
+        measure.textContent = cell.textContent;
+        width = Math.max(width, measure.getBoundingClientRect().width + 28);
+      }
+      measure.remove();
+      updateCellSize('column', index, Math.min(600, width));
+    } else { delete currentSizes().row[index]; }
     applyCellSizes();
     applyFrozenPanes();
+    viewportKey = '';
+    scheduleViewport();
     persistState();
   });
   elements.gridShell.addEventListener('keydown', (event) => {
@@ -1675,21 +2018,23 @@
 
   for (const [element, key] of [[elements.freezeRows, 'freezeRows'], [elements.freezeColumns, 'freezeColumns']]) {
     element.addEventListener('change', () => {
+      captureAnchor();
       state[key] = normalizeFreeze(element.value);
       element.value = state[key];
       persistState();
-      requestPage();
+      requestRows();
     });
   }
-  elements.focusChanges.addEventListener('change', () => {
-    state.focusChanges = elements.focusChanges.checked;
+  elements.focusChanges.addEventListener('click', () => {
+    state.focusChanges = !state.focusChanges;
+    syncFocusButton();
     vscode.postMessage({ type: 'updateSetting', key: 'focusChanges', value: state.focusChanges });
-    state.page = 0;
+    state.offset = 0;
     state.expandedRows = [];
     state.expandedColumns = [];
     clearInspector();
     persistState();
-    requestPage();
+    requestRows();
   });
 
   elements.emptyShowChanges.addEventListener('click', () => {
@@ -1697,23 +2042,25 @@
     state.expandedColumns = [];
     window.clearTimeout(searchTimer);
     state.query = '';
+    state.findText = '';
     elements.search.value = '';
+    elements.findStatus.textContent = '';
     state.filter = 'changed';
-    state.page = 0;
+    state.offset = 0;
     updateFilterButtons();
     clearInspector();
     vscode.postMessage({ type: 'updateSetting', key: 'rowFilter', value: state.filter });
-    requestPage();
+    requestRows();
   });
 
   document.querySelectorAll('.filter').forEach((button) => {
     button.addEventListener('click', () => {
       if (state.filter === button.dataset.filter) { return; }
-      state.autoSelectFilter = false;
+
       state.expandedRows = [];
       state.expandedColumns = [];
       state.filter = button.dataset.filter;
-      state.page = 0;
+      state.offset = 0;
       updateFilterButtons();
       clearInspector();
       vscode.postMessage({
@@ -1721,36 +2068,62 @@
         key: 'rowFilter',
         value: state.filter
       });
-      requestPage();
+      requestRows();
     });
   });
 
   elements.search.addEventListener('input', () => {
     window.clearTimeout(searchTimer);
+    state.findText = elements.search.value;
+    state.findRequestId += 1;
+    elements.findStatus.textContent = state.findText.trim() ? 'Finding…' : '';
+    elements.search.closest('.search-box').classList.toggle('has-query', Boolean(state.findText.trim()));
+    elements.findPrevious.disabled = elements.findNext.disabled = !state.findText.trim();
+    viewportKey = '';
+    scheduleViewport();
     searchTimer = window.setTimeout(() => {
-      state.expandedRows = [];
-      state.query = elements.search.value;
-      state.page = 0;
-      clearInspector();
-      requestPage();
+      if (state.matchOnly) { applyMatchFilter(); }
+      else if (state.findText.trim()) { requestFind('next', true); }
+      persistState();
     }, 260);
   });
-
-  elements.previousPage.addEventListener('click', () => {
-    if (state.page > 0) {
-      state.expandedRows = [];
-      state.page -= 1;
-      requestPage();
+  elements.search.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      window.clearTimeout(searchTimer);
+      if (state.matchOnly && state.query !== state.findText) { applyMatchFilter(); }
+      else { requestFind(event.shiftKey ? 'previous' : 'next'); }
     }
+    if (event.key === 'Escape') { event.preventDefault(); activeGrid().focus(); }
   });
-
-  elements.nextPage.addEventListener('click', () => {
-    if (state.pageData && state.page < state.pageData.totalPages - 1) {
-      state.expandedRows = [];
-      state.page += 1;
-      requestPage();
+  elements.findPrevious.addEventListener('click', () => requestFind('previous'));
+  elements.findNext.addEventListener('click', () => requestFind('next'));
+  elements.matchOnly.addEventListener('change', () => { state.matchOnly = elements.matchOnly.checked; applyMatchFilter(); });
+  elements.goTo.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') { return; }
+    event.preventDefault();
+    const address = elements.goTo.value.trim();
+    if (!/^(?:[a-z]+)?[1-9][0-9]*$/i.test(address)) {
+      announce('Enter a row number such as 218, or a cell address such as C218.');
+      return;
     }
+    requestLocation({ address, column: state.selectedCell?.column, side: state.activeSide });
+    elements.displayOptions.hidePopover();
   });
+  elements.retryRows.addEventListener('click', () => { elements.retryRows.hidden = true; rowStream.retry(); viewportKey = ''; scheduleViewport(); });
+  elements.previousSheetChange.addEventListener('click', () => { elements.displayOptions.hidePopover(); changeSheet('previous'); });
+  elements.nextSheetChange.addEventListener('click', () => { elements.displayOptions.hidePopover(); changeSheet('next'); });
+  elements.displayOptions.addEventListener('beforetoggle', (event) => {
+    if (event.newState === 'open') {
+      const bounds = elements.displayOptionsButton.getBoundingClientRect();
+      elements.displayOptions.style.top = `${bounds.bottom + 6}px`;
+      elements.displayOptions.style.right = `${Math.max(8, window.innerWidth - bounds.right)}px`;
+      elements.displayOptions.style.maxHeight = `${window.innerHeight - bounds.bottom - 14}px`;
+    }
+    elements.displayOptionsButton.setAttribute('aria-expanded', String(event.newState === 'open'));
+  });
+  elements.toggleDetails.addEventListener('click', () => setDetailsOpen(!state.detailsOpen));
+  elements.closeDetails.addEventListener('click', () => setDetailsOpen(false));
 
   elements.sheetSelect.addEventListener('change', () => {
     selectSheet(elements.sheetSelect.value, true);
@@ -1765,8 +2138,10 @@
     vscode.postMessage({ type: 'openLocalFile' });
   });
 
-  elements.diffModeSelect.addEventListener('change', () => {
-    applyDiffMode(elements.diffModeSelect.value);
+  elements.diffModeSwitch.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-mode]');
+    if (!button || button.dataset.mode === state.diffMode) { return; }
+    applyDiffMode(button.dataset.mode);
     vscode.postMessage({ type: 'updateSetting', key: 'diffMode', value: state.diffMode });
   });
 
@@ -1915,8 +2290,33 @@
   window.addEventListener('resize', hideTooltip);
   document.documentElement.addEventListener('pointerleave', hideTooltip);
 
-  elements.leftGrid.addEventListener('scroll', () => synchronizeScroll(elements.leftGrid, elements.rightGrid));
-  elements.rightGrid.addEventListener('scroll', () => synchronizeScroll(elements.rightGrid, elements.leftGrid));
+  for (const grid of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) {
+    grid.addEventListener('scroll', () => {
+      if (!rowStream.metadata || !grid.clientWidth) { return; }
+      const expected = programmaticScroll.get(grid);
+      const programmed = expected && Math.abs(expected.top - grid.scrollTop) <= 1 && Math.abs(expected.left - grid.scrollLeft) <= 1;
+      if (!programmed) {
+        state.activeSide = grid === elements.leftGrid ? 'left' : 'right';
+        logicalTop = rowStream.logicalFromPhysical(grid.scrollTop, scrollViewportHeight());
+      }
+      programmaticScroll.delete(grid);
+      if (!programmed && state.diffMode !== 'unified') { synchronizeScroll(grid, grid === elements.leftGrid ? elements.rightGrid : elements.leftGrid); }
+      scheduleViewport();
+    }, { passive: true });
+    grid.addEventListener('wheel', (event) => {
+      if (!rowStream.metadata || !event.deltaY || event.shiftKey || event.ctrlKey || event.metaKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) { return; }
+      event.preventDefault();
+      cancelPendingNavigation();
+      state.activeSide = grid === elements.leftGrid ? 'left' : 'right';
+      const factor = event.deltaMode === 1 ? 31 : event.deltaMode === 2 ? scrollViewportHeight() : 1;
+      moveScroll(logicalTop + event.deltaY * factor);
+      if (event.deltaX) { grid.scrollLeft += event.deltaX; }
+    }, { passive: false });
+    grid.addEventListener('keydown', handleGridKey);
+    grid.addEventListener('pointerdown', () => cancelPendingNavigation());
+  }
+  new ResizeObserver(scheduleViewport).observe(elements.gridShell);
+  window.addEventListener('pagehide', flushState);
 
   document.addEventListener('copy', (event) => {
     if (shouldKeepNativeCopy()) {
@@ -1935,24 +2335,32 @@
       return;
     }
     syncingScroll = true;
-    target.scrollTop = source.scrollTop;
-    target.scrollLeft = source.scrollLeft;
+    writeScroll(target, source.scrollTop, source.scrollLeft);
     window.requestAnimationFrame(() => {
       syncingScroll = false;
     });
   }
 
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { hideTooltip(); }
+    if (event.key === 'Escape') { hideTooltip(); cancelPendingNavigation(); }
     if (elements.cellComparisonDialog.open) { return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'f') {
       event.preventDefault();
+      elements.displayOptions.hidePopover();
       elements.search.focus();
       elements.search.select();
-    } else if (event.altKey && event.key === 'ArrowLeft') {
+    } else if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'g') {
+      event.preventDefault();
+      elements.displayOptions.showPopover();
+      elements.goTo.focus();
+      elements.goTo.select();
+    } else if (event.key === 'F7') {
+      event.preventDefault();
+      requestChange(event.shiftKey ? 'previous' : 'next');
+    } else if (event.altKey && event.key === 'ArrowLeft' && !event.target.matches('input, textarea, select')) {
       event.preventDefault();
       requestChange('previous');
-    } else if (event.altKey && event.key === 'ArrowRight') {
+    } else if (event.altKey && event.key === 'ArrowRight' && !event.target.matches('input, textarea, select')) {
       event.preventDefault();
       requestChange('next');
     }

@@ -60,19 +60,34 @@ export interface RowView {
   cells: DiffStatus[];
 }
 
-export interface SheetPage {
+export interface ViewOptions {
+  freezeRows?: number;
+  freezeColumns?: number;
+  focusChanges?: boolean;
+  expandedRows?: number[];
+  expandedColumns?: number[];
+}
+
+export interface RowGap {
+  kind: 'gap';
+  start: number;
+  end: number;
+}
+
+export type SheetEntry = RowGap | { kind: 'row'; row: RowView; context: boolean };
+
+export interface SheetRowBatch {
   sheet: string;
   columns: ColumnView[];
-  rows: RowView[];
+  allColumns?: ColumnView[];
+  changes?: { cells: number; rows: number };
+  entries: SheetEntry[];
   frozenRows: RowView[];
-  contextRows: RowView[];
   filterCounts: Record<RowFilter, number>;
   totalColumns: number;
-  sheetRows: number;
-  page: number;
-  pageSize: number;
+  offset: number;
+  totalEntries: number;
   totalRows: number;
-  totalPages: number;
   filter: RowFilter;
   query: string;
 }
@@ -80,7 +95,35 @@ export interface SheetPage {
 export interface ChangeNavigationTarget {
   row: number;
   column: number;
-  page: number;
+  offset: number;
+  ordinal?: number;
+  total?: number;
+  wrapped?: boolean;
+}
+
+export interface LocationRequest {
+  row?: number;
+  column?: number;
+  side?: string;
+  address?: string;
+  offset?: number;
+  rowDelta?: number;
+  columnDelta?: number;
+  edge?: 'first' | 'last';
+}
+
+interface SheetView {
+  sheet: SheetModel;
+  columns: ColumnView[];
+  matchingRows?: Set<number>;
+  layout?: Array<number | RowGap>;
+  freezeRows: number;
+  totalRows: number;
+  totalEntries: number;
+  filterCounts: Record<RowFilter, number>;
+  rowPositions?: Map<number, number>;
+  cellTargets: ChangeLocation[];
+  rowTargets: ChangeLocation[];
 }
 
 interface ChangeLocation {
@@ -115,6 +158,8 @@ const comparisonCacheTtlMs = 60_000;
 
 export class WorkbookComparison {
   readonly summary: WorkbookSummary;
+  private cachedView?: { key: string; view: SheetView };
+  private cachedSearch?: { view: SheetView; query: string; cells: number[] };
 
   static mayReuse(leftUri: vscode.Uri, rightUri: vscode.Uri, ignoreWhitespace: boolean): boolean {
     return recentComparisons.has(comparisonCacheKey(leftUri, rightUri, ignoreWhitespace));
@@ -251,42 +296,17 @@ export class WorkbookComparison {
     return comparison;
   }
 
-  getPage(
-    sheetName: string,
-    page: number,
-    pageSize: number,
-    filter: RowFilter,
-    query: string,
-    options: { freezeRows?: number; freezeColumns?: number; focusChanges?: boolean; expandedRows?: number[]; expandedColumns?: number[] } = {}
-  ): SheetPage {
+  private getView(sheetName: string, filter: RowFilter, query: string, options: ViewOptions): SheetView {
+    const key = JSON.stringify([sheetName, filter, query, options]);
+    if (this.cachedView?.key === key) { return this.cachedView.view; }
     const sheet = this.sheets.get(sheetName);
-    if (!sheet) {
-      throw new Error(`Worksheet not found: ${sheetName}`);
-    }
-
+    if (!sheet) { throw new Error(`Worksheet not found: ${sheetName}`); }
     const normalizedQuery = query.trim().toLocaleLowerCase();
     const rowIndexes = selectViewRows(sheet, filter, normalizedQuery, options.focusChanges === true);
-    const totalRows = rowIndexes === undefined
-      ? sheet.rows.length
-      : rowIndexes.length;
-    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
-    const safePage = Math.max(0, Math.min(Math.trunc(page), totalPages - 1));
-    const offset = safePage * pageSize;
-    const count = Math.min(pageSize, Math.max(0, totalRows - offset));
-    const visibleRows: number[] = [];
-
-    if (rowIndexes === undefined) {
-      const start = offset;
-      for (let index = 0; index < count; index += 1) {
-        visibleRows.push(start + index);
-      }
-    } else {
-      visibleRows.push(...rowIndexes.slice(offset, offset + count));
-    }
-
+    const totalRows = rowIndexes?.length ?? sheet.rows.length;
     const filterCounts = Object.fromEntries(
       (['all', 'changed', 'modified', 'added', 'removed'] as const).map((candidate) =>
-        [candidate, selectRows(sheet, candidate, normalizedQuery)?.length ?? sheet.rows.length])
+        [candidate, candidate === filter && !options.focusChanges ? totalRows : selectRows(sheet, candidate, normalizedQuery)?.length ?? sheet.rows.length])
     ) as Record<RowFilter, number>;
     const freezeRows = Math.min(sheet.rows.length, Math.max(0, Math.min(20, Math.trunc(options.freezeRows ?? 0))));
     const freezeColumns = Math.max(0, Math.min(20, Math.trunc(options.freezeColumns ?? 0)));
@@ -310,55 +330,91 @@ export class WorkbookComparison {
       }
     }
 
-    const makeRow = (rowIndex: number): RowView => {
-      const alignment = sheet.rows[rowIndex]!;
-      const left: Array<CellView | null> = [];
-      const right: Array<CellView | null> = [];
-      const cells: DiffStatus[] = [];
-      for (const column of columns) {
-        const leftCell = readCell(sheet.left, alignment.leftIndex, column.leftIndex);
-        const rightCell = readCell(sheet.right, alignment.rightIndex, column.rightIndex);
-        left.push(toCellView(leftCell));
-        right.push(toCellView(rightCell));
-        cells.push(alignment.leftIndex === undefined ? 'added' : alignment.rightIndex === undefined ? 'removed'
-          : compareCells(leftCell, rightCell, this.ignoreWhitespace));
+    const matchingRows = rowIndexes === undefined ? undefined : new Set(rowIndexes);
+    let layout: Array<number | RowGap> | undefined;
+    if (rowIndexes !== undefined) {
+      const context = new Set<number>();
+      if (totalRows > 0 && (filter !== 'all' || options.focusChanges)) {
+        for (let row = 0; row < detectHeaderRows(sheet); row += 1) { context.add(row); }
+        for (const row of options.expandedRows ?? []) {
+          if (row >= 0 && row < sheet.rows.length) { context.add(row); }
+        }
       }
-      return {
-        index: rowIndex,
-        ...alignment,
-        status: sheet.rowStatuses.get(rowIndex) ?? 'unchanged',
-        left,
-        right,
-        cells
-      };
-    };
-    const context = new Set<number>();
-    if ((filter !== 'all' || options.focusChanges) && totalRows > 0) {
-      // Headers explain the values; surrounding records are only shown on request.
-      const headerCount = detectHeaderRows(sheet);
-      for (let row = 0; row < headerCount; row += 1) { context.add(row); }
-      for (const row of options.expandedRows ?? []) {
-        if (Number.isInteger(row) && row >= 0 && row < sheet.rows.length) { context.add(row); }
+      const visible = [...new Set([...rowIndexes, ...context])].filter((row) => row >= freezeRows).sort((a, b) => a - b);
+      layout = [];
+      let nextRow = freezeRows;
+      const showGaps = filter !== 'all' || options.focusChanges;
+      for (const row of visible) {
+        if (showGaps && row > nextRow) { layout.push({ kind: 'gap', start: nextRow, end: row }); }
+        layout.push(row);
+        nextRow = row + 1;
+      }
+      if (showGaps && totalRows > 0 && nextRow < sheet.rows.length) {
+        layout.push({ kind: 'gap', start: nextRow, end: sheet.rows.length });
       }
     }
-    const rows = visibleRows.map(makeRow);
-    const frozenRows = Array.from({ length: freezeRows }, (_, row) => makeRow(row));
+    const cellTargets = sheet.changedCells.filter((cell) =>
+      (!matchingRows || matchingRows.has(cell.row)) &&
+      (filter === 'all' || filter === 'changed' || cell.status === (filter === 'modified' ? 'changed' : filter)));
+    const rowTargets = cellTargets.filter((cell, index) => index === 0 || cellTargets[index - 1]!.row !== cell.row);
+    const rowPositions = layout ? new Map(layout.flatMap((entry, index) => typeof entry === 'number' ? [[entry, index] as const] : [])) : undefined;
+    const view: SheetView = {
+      rowPositions, cellTargets, rowTargets,
+      sheet, columns, matchingRows, layout, freezeRows, totalRows, filterCounts,
+      totalEntries: layout?.length ?? Math.max(0, sheet.rows.length - freezeRows)
+    };
+    this.cachedView = { key, view };
+    return view;
+  }
 
+  getRows(sheetName: string, offset: number, limit: number, filter: RowFilter, query: string, options: ViewOptions = {}, columnIndexes?: number[]): SheetRowBatch {
+    const view = this.getView(sheetName, filter, query, options);
+    const start = Math.max(0, Math.min(Math.trunc(offset), Math.max(0, view.totalEntries - 1)));
+    const end = Math.min(view.totalEntries, start + Math.max(0, Math.min(200, Math.trunc(limit))));
+    const columnSet = columnIndexes ? new Set(columnIndexes) : undefined;
+    const columns = limit === 0 ? [] : columnSet ? view.columns.filter((column) => columnSet.has(column.index)) : view.columns;
+    const cellView = { ...view, columns };
+    const entries: SheetEntry[] = [];
+    for (let position = start; position < end; position += 1) {
+      const entry = view.layout ? view.layout[position]! : position + view.freezeRows;
+      entries.push(typeof entry === 'number'
+        ? { kind: 'row', row: this.makeRow(cellView, entry), context: view.matchingRows !== undefined && !view.matchingRows.has(entry) }
+        : entry);
+    }
     return {
-      sheet: sheetName,
-      columns,
-      rows,
-      frozenRows,
-      contextRows: [...context].sort((a, b) => a - b).map(makeRow),
-      filterCounts,
-      totalColumns: sheet.columns.length,
-      sheetRows: sheet.rows.length,
-      page: safePage,
-      pageSize,
-      totalRows,
-      totalPages,
-      filter,
-      query
+      sheet: sheetName, columns, entries, offset: start,
+      ...(limit === 0 ? {
+        allColumns: view.columns.map((column) => ({ ...column, title: toCellView(readCell(view.sheet.right, view.sheet.rows[0]?.rightIndex, column.rightIndex))?.display ||
+          toCellView(readCell(view.sheet.left, view.sheet.rows[0]?.leftIndex, column.leftIndex))?.display || '' })),
+        changes: { cells: view.cellTargets.length, rows: view.rowTargets.length }
+      } : {}),
+      frozenRows: limit === 0 ? [] : Array.from({ length: view.freezeRows }, (_, row) => this.makeRow(cellView, row)),
+      totalEntries: view.totalEntries, totalRows: view.totalRows, filterCounts: view.filterCounts,
+      totalColumns: view.sheet.columns.length, filter, query
+    };
+  }
+
+  private makeRow(view: SheetView, rowIndex: number): RowView {
+    const { sheet, columns } = view;
+    const alignment = sheet.rows[rowIndex]!;
+    const left: Array<CellView | null> = [];
+    const right: Array<CellView | null> = [];
+    const cells: DiffStatus[] = [];
+    for (const column of columns) {
+      const leftCell = readCell(sheet.left, alignment.leftIndex, column.leftIndex);
+      const rightCell = readCell(sheet.right, alignment.rightIndex, column.rightIndex);
+      left.push(toCellView(leftCell));
+      right.push(toCellView(rightCell));
+      cells.push(alignment.leftIndex === undefined ? 'added' : alignment.rightIndex === undefined ? 'removed'
+        : compareCells(leftCell, rightCell, this.ignoreWhitespace));
+    }
+    return {
+      index: rowIndex,
+      ...alignment,
+      status: sheet.rowStatuses.get(rowIndex) ?? 'unchanged',
+      left,
+      right,
+      cells
     };
   }
 
@@ -368,30 +424,17 @@ export class WorkbookComparison {
     currentColumn: number | undefined,
     direction: 'previous' | 'next',
     unit: 'row' | 'cell',
-    pageSize: number,
     filter: RowFilter,
     query: string,
-    focusChanges = false
+    options: ViewOptions = {}
   ): ChangeNavigationTarget | undefined {
     const sheet = this.sheets.get(sheetName);
     if (!sheet) {
       return undefined;
     }
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    const selectedRows = selectViewRows(sheet, filter, normalizedQuery, focusChanges);
-    const visibleRows = selectedRows === undefined ? undefined : new Set(selectedRows);
-    const candidates = sheet.changedCells.filter((location) => {
-      const matchesFilter = filter === 'all' || filter === 'changed' ||
-        location.status === (filter === 'modified' ? 'changed' : filter);
-      const rowIsVisible = visibleRows === undefined || visibleRows.has(location.row);
-      return matchesFilter && rowIsVisible;
-    });
-    if (candidates.length === 0) {
-      return undefined;
-    }
-    const navigationCandidates = unit === 'row'
-      ? candidates.filter((location, index) => index === 0 || candidates[index - 1]?.row !== location.row)
-      : candidates;
+    const view = this.getView(sheetName, filter, query, options);
+    const navigationCandidates = unit === 'row' ? view.rowTargets : view.cellTargets;
+    if (!navigationCandidates.length) { return undefined; }
 
     let targetIndex: number;
     const hasCurrent = currentRow !== undefined && (unit === 'row' || currentColumn !== undefined);
@@ -433,15 +476,93 @@ export class WorkbookComparison {
     if (!target) {
       return undefined;
     }
-    const rowPosition = selectedRows === undefined
-      ? target.row
-      : selectedRows.indexOf(target.row);
     return {
       row: target.row,
       column: target.column,
-      page: Math.max(0, Math.floor(Math.max(0, rowPosition) / pageSize))
+      offset: this.rowOffset(view, target.row), ordinal: targetIndex + 1, total: navigationCandidates.length,
+      wrapped: hasCurrent && (direction === 'next' ? target.row < currentRow || (target.row === currentRow && target.column <= (currentColumn ?? -1))
+        : target.row > currentRow || (target.row === currentRow && target.column >= (currentColumn ?? Number.MAX_SAFE_INTEGER)))
     };
   }
+
+  private rowOffset(view: SheetView, row: number): number {
+    return row < view.freezeRows ? -1 : view.rowPositions ? view.rowPositions.get(row) ?? -2 : row - view.freezeRows;
+  }
+
+  getLocationTarget(sheetName: string, request: LocationRequest, filter: RowFilter, query: string, options: ViewOptions): ChangeNavigationTarget | undefined {
+    const view = this.getView(sheetName, filter, query, options);
+    if (!view.sheet.rows.length || !view.columns.length) { return undefined; }
+    let row = request.row;
+    let column = request.column;
+    if (request.address) {
+      const address = /^([a-z]+)?([1-9][0-9]*)$/i.exec(request.address.trim());
+      if (!address) { return undefined; }
+      const side = request.side === 'left' ? 'leftIndex' : 'rightIndex';
+      row = view.sheet.rows.findIndex((entry) => entry[side] === Number(address[2]) - 1);
+      if (address[1]) {
+        const originalColumn = XLSX.utils.decode_col(address[1].toUpperCase());
+        column = view.columns.find((entry) => entry[side] === originalColumn)?.index;
+        if (column === undefined) { return undefined; }
+      }
+    } else if (request.offset !== undefined || request.rowDelta || request.edge) {
+      const current = row === undefined ? 0 : row < view.freezeRows ? row : view.freezeRows + this.rowOffset(view, row);
+      const direction = (request.rowDelta ?? 0) < 0 || request.edge === 'last' ? -1 : 1;
+      const total = view.freezeRows + view.totalEntries;
+      let offset = request.edge ? request.edge === 'first' ? 0 : total - 1
+        : request.offset !== undefined ? view.freezeRows + request.offset : current + (request.rowDelta ?? 0);
+      offset = Math.max(0, Math.min(Math.trunc(offset), total - 1));
+      while (offset >= 0 && offset < total) {
+        const entry = offset < view.freezeRows ? offset : view.layout ? view.layout[offset - view.freezeRows] : offset;
+        if (typeof entry === 'number') { row = entry; break; }
+        offset += direction;
+      }
+      if (offset < 0 || offset >= total) { return undefined; }
+    }
+    if (row === undefined || row < 0 || row >= view.sheet.rows.length || this.rowOffset(view, row) === -2) { return undefined; }
+    const position = Math.max(0, view.columns.findIndex((entry) => entry.index === column));
+    column = view.columns[Math.max(0, Math.min(position + (request.columnDelta ?? 0), view.columns.length - 1))]!.index;
+    return { row, column, offset: this.rowOffset(view, row) };
+  }
+
+  getSearchTarget(sheetName: string, text: string, currentRow: number | undefined, currentColumn: number | undefined,
+    direction: 'previous' | 'next', filter: RowFilter, query: string, options: ViewOptions, includeCurrent = false): ChangeNavigationTarget | undefined {
+    const view = this.getView(sheetName, filter, query, options);
+    const normalized = text.trim().toLocaleLowerCase();
+    if (!normalized) { return undefined; }
+    if (this.cachedSearch?.view !== view || this.cachedSearch.query !== normalized) {
+      const cells: number[] = [];
+      const rows = view.matchingRows ?? view.sheet.occupiedRows;
+      const stride = view.sheet.columns.length;
+      for (const row of rows) {
+        const alignment = view.sheet.rows[row]!;
+        for (const column of view.columns) {
+          const before = toCellView(readCell(view.sheet.left, alignment.leftIndex, column.leftIndex));
+          const after = toCellView(readCell(view.sheet.right, alignment.rightIndex, column.rightIndex));
+          if ([before?.display, before?.formula, after?.display, after?.formula].some((value) => value?.toLocaleLowerCase().includes(normalized))) {
+            cells.push(row * stride + column.index);
+          }
+        }
+      }
+      this.cachedSearch = { view, query: normalized, cells };
+    }
+    const cells = this.cachedSearch.cells;
+    if (!cells.length) { return undefined; }
+    const stride = view.sheet.columns.length;
+    const current = (currentRow ?? -1) * stride + (currentColumn ?? -1);
+    let index = direction === 'next' ? cells.findIndex((cell) => includeCurrent ? cell >= current : cell > current)
+      : -1;
+    if (direction === 'previous') {
+      for (let candidate = cells.length - 1; candidate >= 0; candidate -= 1) {
+        if (includeCurrent ? cells[candidate]! <= current : cells[candidate]! < current) { index = candidate; break; }
+      }
+    }
+    const wrapped = index < 0;
+    if (wrapped) { index = direction === 'next' ? 0 : cells.length - 1; }
+    const value = cells[index]!;
+    const row = Math.floor(value / stride);
+    return { row, column: value % stride, offset: this.rowOffset(view, row), ordinal: index + 1, total: cells.length, wrapped };
+  }
+
 }
 
 function comparisonCacheKey(leftUri: vscode.Uri, rightUri: vscode.Uri, ignoreWhitespace: boolean): string {
@@ -604,7 +725,7 @@ function detectHeaderRows(sheet: SheetModel): number {
   return 1;
 }
 
-// Keep page selection and navigation on the same logical row set.
+// Keep row loading and navigation on the same logical row set.
 function selectViewRows(sheet: SheetModel, filter: RowFilter, query: string, focus: boolean): number[] | undefined {
   if (!focus) { return selectRows(sheet, filter, query); }
   const structuralColumns = sheet.columns.some((column) =>

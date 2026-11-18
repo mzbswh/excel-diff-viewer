@@ -4,6 +4,7 @@ import type { RowAlignment } from './rows';
 export interface ColumnView {
   index: number;
   label: string;
+  title?: string;
   leftIndex?: number;
   rightIndex?: number;
   leftLabel?: string;
