@@ -13,6 +13,7 @@ class WorksheetRowStream {
     this.needed = [];
     this.failed = new Set();
     this.defaultHeight = 31;
+    this.trailingSpace = 0;
     this.heights = new Float32Array(0);
     this.heightTree = new Float64Array(0);
     this.version = 0;
@@ -118,7 +119,7 @@ class WorksheetRowStream {
   }
 
   metrics(logicalTop, viewportHeight) {
-    const total = this.heightBefore(this.metadata.totalEntries);
+    const total = this.heightBefore(this.metadata.totalEntries) + this.trailingSpace;
     const extent = Math.min(total, 8_000_000);
     const logicalMax = Math.max(0, total - viewportHeight);
     const physicalMax = Math.max(0, extent - viewportHeight);

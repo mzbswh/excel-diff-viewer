@@ -2,6 +2,11 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.3.2 - 2026-11-18
+
+- Keep visible rows in place when expanding hidden rows with Show next 50 or Show all.
+- Keep the current table visible while expanded rows load to prevent flickering.
+
 ## 1.3.1 - 2026-11-18
 
 - Fix the duplicate focus border in the worksheet picker.

@@ -349,6 +349,8 @@
   let viewportFrame = null;
   let viewportKey = '';
   let restoreOffset = null;
+  let preserveViewport = false;
+  let rowExpansionAnchor = null;
 
   function viewOptions() {
     return {
@@ -393,8 +395,10 @@
     } };
   }
 
-  function requestRows() {
+  function requestRows(keepViewport = false) {
     if (!state.sheet) { return; }
+    preserveViewport = keepViewport;
+    if (!keepViewport) { rowExpansionAnchor = null; }
     hideTooltip();
     state.requestId += 1;
     state.dataRequestId += 1;
@@ -445,7 +449,7 @@
         const direction = pendingSheetDirection;
         pendingSheetDirection = null;
         requestChange(direction);
-      } else if (state.findText.trim()) { requestFind('next', true); }
+      } else if (!preserveViewport && state.findText.trim()) { requestFind('next', true); }
     }
     const range = state.rowData?.range;
     if (!range || (batch.offset < range.end && batch.offset + batch.entries.length > range.start) || batch.frozenRows.length && !state.rowData.frozenRows.length) {
@@ -469,6 +473,10 @@
     if (restoreOffset !== null) {
       state.offset = Math.max(0, Math.min(restoreOffset, Math.max(0, rowStream.metadata.totalEntries - 1)));
       logicalTop = rowStream.heightBefore(state.offset) + restoreIntra;
+      if (preserveViewport) {
+        rowStream.trailingSpace = Math.max(0,
+          logicalTop + scrollViewportHeight() - rowStream.heightBefore(rowStream.metadata.totalEntries));
+      }
       restoreOffset = null;
       restoreIntra = 0;
     }
@@ -494,16 +502,20 @@
       persistState();
       return;
     }
-    viewportKey = key;
     const entries = [];
     for (let position = range.start; position < range.end; position += 1) {
       entries.push({ ...(rowStream.entry(position) || { kind: 'loading' }), position });
     }
+    const loading = entries.some((entry) => entry.kind === 'loading');
+    // Keep the current table visible until the expanded view can replace it in one frame.
+    if (preserveViewport && loading) { return; }
+    viewportKey = key;
     const rows = entries.filter((entry) => entry.kind === 'row').map((entry) => entry.row);
     state.rowData = { ...rowStream.metadata, columns: columns.columns, slots: columns.slots, entries, rows,
       contextRows: entries.filter((entry) => entry.kind === 'row' && entry.context).map((entry) => entry.row), range };
     renderGrids(state.rowData);
-    elements.rowLoading.hidden = !entries.some((entry) => entry.kind === 'loading');
+    elements.rowLoading.hidden = !loading;
+    if (elements.rowLoading.hidden) { preserveViewport = false; rowExpansionAnchor = null; }
     for (const pane of [elements.leftGrid, elements.rightGrid, elements.unifiedGrid]) { pane.removeAttribute('aria-busy'); }
     elements.app.classList.remove('loading');
     updateRowRange(range);
@@ -536,7 +548,7 @@
     const anchor = rowStream.indexAt(logicalTop);
     const intra = logicalTop - rowStream.heightBefore(anchor);
     const metrics = rowStream.metrics(logicalTop, scrollViewportHeight());
-    const atBottom = metrics.logicalMax > 0 && metrics.logicalMax - logicalTop < 2;
+    const atBottom = !preserveViewport && metrics.logicalMax > 0 && metrics.logicalMax - logicalTop < 2;
     if (state.diffMode === 'unified') { updateTable(data, 'unified', elements.unifiedGrid); }
     else {
       updateTable(data, 'left', elements.leftGrid);
@@ -552,6 +564,7 @@
       : rowStream.heightBefore(anchor) + intra;
     updateVirtualSpacers(data);
     syncPhysicalScroll();
+    restoreRowExpansionAnchor();
     if (state.pendingFocus) { focusSelectedCell(data); }
     highlightSelection();
     if (handle && focusedGrid && !handle.isConnected) {
@@ -732,13 +745,55 @@
   }
 
   function expandRange(kind, start, end) {
+    if (!rowStream.metadata || !state.rowData) { return; }
+    captureAnchor();
+    if (kind === 'rows') { captureRowExpansionAnchor(start, end); }
     const key = kind === 'rows' ? 'expandedRows' : 'expandedColumns';
     const expanded = new Set(state[key]);
     for (let index = start; index < end; index += 1) { expanded.add(index); }
     state[key] = [...expanded];
-    captureAnchor();
     clearInspector();
-    requestRows();
+    requestRows(true);
+  }
+
+  function captureRowExpansionAnchor(start, end) {
+    const gap = state.rowData.entries.find((entry) => entry.kind === 'gap' && entry.start === start);
+    const grid = activeGrid();
+    const bounds = grid.getBoundingClientRect();
+    const top = bounds.top + (parseFloat(grid.style.scrollPaddingTop) || 29);
+    // Keep the first visible matching row in place, even when headers precede the gap.
+    const anchor = state.rowData.entries.find((entry) => {
+      if (entry.kind !== 'row' || entry.context) { return false; }
+      const row = grid.querySelector(`tr[data-position="${entry.position}"][data-row]`);
+      if (!row) { return false; }
+      const rect = row.getBoundingClientRect();
+      return rect.bottom > top && rect.top < bounds.bottom;
+    });
+    if (anchor) {
+      state.offset = anchor.position;
+      restoreIntra = logicalTop - rowStream.heightBefore(state.offset);
+      const row = grid.querySelector(`tr[data-row="${anchor.row.index}"]`);
+      rowExpansionAnchor = { row: anchor.row.index, top: row.getBoundingClientRect().top - bounds.top };
+    }
+    // The gap becomes N rows, plus a remaining gap for a partial expansion.
+    if (gap.position < state.offset) {
+      state.offset += end - start - (end === gap.end ? 1 : 0);
+    }
+  }
+
+  function restoreRowExpansionAnchor() {
+    if (!rowExpansionAnchor) { return; }
+    const grid = activeGrid();
+    const row = grid.querySelector(`tr[data-position][data-row="${rowExpansionAnchor.row}"]`);
+    if (!row) { return; }
+    const delta = row.getBoundingClientRect().top - grid.getBoundingClientRect().top - rowExpansionAnchor.top;
+    if (Math.abs(delta) < 0.5) { return; }
+    logicalTop += delta;
+    // Preserve any blank area below the old view instead of snapping to the end.
+    rowStream.trailingSpace = Math.max(rowStream.trailingSpace,
+      logicalTop + scrollViewportHeight() - rowStream.heightBefore(rowStream.metadata.totalEntries));
+    updateVirtualSpacers(state.rowData);
+    syncPhysicalScroll();
   }
 
   function gapControls(kind, start, end) {
