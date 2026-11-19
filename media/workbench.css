@@ -13,8 +13,8 @@
 .file-card span { font-size: 11px; line-height: 16px; }
 .file-card .side-label { padding: 0; background: transparent !important; color: var(--muted) !important; font-size: 10px !important; font-weight: 500; letter-spacing: 0; }
 .topbar-open-button { height: 30px; padding: 0 10px; border-color: var(--line); background: transparent; color: var(--text); font-size: 12px; }
-.workspace { padding: 0 4px 14px 14px; background: var(--canvas); }
-.main { grid-template-rows: auto 28px minmax(0, 1fr) auto 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.workspace { padding: 0; background: var(--canvas); }
+.main { grid-template-rows: auto 28px minmax(0, 1fr) auto 32px; border: 0; border-radius: 0; background: var(--bg); }
 .toolbar { grid-row: 1; display: grid; gap: 0; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
 .toolbar-primary { display: flex; align-items: center; min-width: 0; gap: 12px; padding: 14px 0 10px; }
 .sheet-picker { flex: 0 1 220px; min-width: 150px; gap: 8px; padding: 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
@@ -120,7 +120,6 @@
   .footer { gap: 10px; }
 }
 @media (max-width: 760px) {
-  .workspace { padding: 0 4px 8px 8px; }
   .topbar { padding-inline: 12px; }
   .topbar { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
   .brand { display: none; }
@@ -139,8 +138,6 @@
   .cell-inspector { display: none; }
 }
 @media (max-width: 480px) {
-  .workspace { padding: 0 2px 4px 4px; }
-  .main { border-radius: 6px; }
   .topbar { padding-inline: 8px; }
   .toolbar { padding: 0 8px; }
   .toolbar-primary { gap: 6px; }

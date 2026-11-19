@@ -2,6 +2,11 @@
 
 All notable changes to Excel Diff Viewer are documented in this file.
 
+## 1.3.3 - 2026-11-19
+
+- Fill the editor width by removing the default VS Code page padding and the worksheet's outer spacing and rounded frame. Keep the right scrollbar at the editor edge.
+- Make the divider between comparison panes easier to see when not hovered.
+
 ## 1.3.2 - 2026-11-18
 
 - Keep visible rows in place when expanding hidden rows with Show next 50 or Show all.

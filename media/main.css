@@ -52,6 +52,7 @@ body {
   width: 100%;
   height: 100%;
   margin: 0;
+  padding: 0;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -553,10 +554,8 @@ button {
 
 .splitter::before {
   position: absolute;
-  inset: 0 1px;
-  border-right: 1px solid var(--line);
-  border-left: 1px solid var(--line);
-  background: var(--panel-strong);
+  inset: 0 2px;
+  background: color-mix(in srgb, var(--muted) 65%, var(--bg));
   content: '';
   transition: background 100ms ease, box-shadow 100ms ease;
 }
